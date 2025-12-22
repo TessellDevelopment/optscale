@@ -47,6 +47,9 @@ service_credentials:
 #  encryption salt for encode user information
 encryption_salt: my~encypt10n~s@lt
 
+# Docker Hub credentials
+dockerhub_dockercfg: ""
+
 # SMTP server and credentials used for sending emails
 smtp:
   server:

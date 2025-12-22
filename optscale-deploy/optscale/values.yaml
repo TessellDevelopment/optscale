@@ -925,6 +925,9 @@ public_port: 443
 docker_registry:
 docker_tag:
 
+# Docker Hub credentials (filled from overlay)
+dockerhub_dockercfg:
+
 # filled from base overlay
 optscale_key:
 
