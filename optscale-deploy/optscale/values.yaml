@@ -909,7 +909,7 @@ subsyncer:
   image:
     repository: subsyncer
     tag: *tag
-    pullPolicy: Always
+    pullPolicy: Never
   startingDeadlineSeconds: 100
   schedule: "0 * * * *"
 
