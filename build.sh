@@ -2,7 +2,7 @@
 # ./build.sh [component] [--tag tag] [--push] [-r registry] [-u username] [-p password] [--no-cache] [--use-nerdctl]
 # leave registry empty if default registry [docker.io] used
 
-set -ex
+set -e
 
 # Initialize default values
 COMPANY="hystax"
@@ -72,13 +72,87 @@ push_image () {
     fi
 }
 
+build_and_push_component() {
+    local DOCKERFILE=$1
+    local COMPONENT_NAME=$2
+    local BUILD_TAG=$3
+    local FLAGS=$4
+    local PUSH=$5
+    local REGISTRY=$6
+    local BUILD_TOOL=$7
+
+    echo "[${COMPONENT_NAME}] Starting build..."
+    if $BUILD_TOOL build $FLAGS -t ${COMPONENT_NAME}:${BUILD_TAG} -f ${DOCKERFILE} . --platform linux/amd64; then
+        echo "[${COMPONENT_NAME}] Build successful"
+
+        if [[ "$PUSH" == true ]]; then
+            echo "[${COMPONENT_NAME}] Starting push..."
+            if push_image $COMPONENT_NAME $BUILD_TAG $REGISTRY; then
+                echo "[${COMPONENT_NAME}] Push successful"
+                return 0
+            else
+                echo "[${COMPONENT_NAME}] Push failed"
+                return 1
+            fi
+        fi
+        return 0
+    else
+        echo "[${COMPONENT_NAME}] Build failed"
+        return 1
+    fi
+}
+
+export -f push_image
+export -f build_and_push_component
+export COMPANY
+export BUILD_TOOL
+
+
+declare -a PIDS
+declare -a COMPONENTS
+
 for DOCKERFILE in $(eval ${FIND_CMD} | xargs)
 do
-    COMPONENT=$(echo "${DOCKERFILE}" | awk -F '/' '{print $(NF-1)}')
-    echo "Building image for ${COMPONENT}, build tag: ${BUILD_TAG}"
-    $BUILD_TOOL build $FLAGS -t ${COMPONENT}:${BUILD_TAG} -f ${DOCKERFILE} . --platform linux/amd64
+    COMPONENT_NAME=$(echo "${DOCKERFILE}" | awk -F '/' '{print $(NF-1)}')
+    echo "Queuing build for ${COMPONENT_NAME}, build tag: ${BUILD_TAG}"
+    build_and_push_component "$DOCKERFILE" "$COMPONENT_NAME" "$BUILD_TAG" "$FLAGS" "$PUSH" "$REGISTRY" "$BUILD_TOOL" &
+    PIDS+=($!)
+    COMPONENTS+=("$COMPONENT_NAME")
+done
 
-    if [[ "$PUSH" == true ]]; then
-      push_image $COMPONENT $BUILD_TAG $REGISTRY
+echo "=== All builds started, waiting for completion ==="
+echo "Total components: ${#PIDS[@]}"
+
+FAILED=false
+declare -a FAILED_COMPONENTS
+
+for i in "${!PIDS[@]}"; do
+    PID=${PIDS[$i]}
+    COMPONENT_NAME=${COMPONENTS[$i]}
+
+    echo "Waiting for ${COMPONENT_NAME} (PID: $PID)..."
+
+    if wait $PID; then
+        echo "✓ ${COMPONENT_NAME} completed successfully"
+    else
+        EXIT_CODE=$?
+        echo "✗ ${COMPONENT_NAME} failed with exit code $EXIT_CODE"
+        FAILED=true
+        FAILED_COMPONENTS+=("$COMPONENT_NAME")
     fi
 done
+
+echo ""
+echo "=== Build Summary ==="
+echo "Total components: ${#PIDS[@]}"
+
+if [[ "$FAILED" == true ]]; then
+    echo "Failed components: ${#FAILED_COMPONENTS[@]}"
+    echo "Failed: ${FAILED_COMPONENTS[*]}"
+    echo ""
+    echo "❌ Build failed!"
+    exit 1
+else
+    echo "✓ All components built successfully!"
+    exit 0
+fi
