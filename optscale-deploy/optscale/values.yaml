@@ -897,7 +897,7 @@ subspector:
     id:
     repository: subspector
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *subspector_name
     type: ClusterIP
@@ -909,7 +909,7 @@ subsyncer:
   image:
     repository: subsyncer
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 * * * *"
 
@@ -919,7 +919,7 @@ bailiff:
   image:
     repository: bailiff
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "30 * * * *"
 
