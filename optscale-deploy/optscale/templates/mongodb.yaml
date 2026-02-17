@@ -242,6 +242,6 @@ spec:
         - ReadWriteOnce
       resources:
         requests:
-          storage: 50Gi
+          storage: {{ $config.storage_size }}
 {{- end }}
 {{- end }}

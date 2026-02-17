@@ -63,6 +63,7 @@ mongo:
     key: secureShardingKeyFFFDDa129
   # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
   usePersistentVolume: true
+  storage_size: 100Gi
 
 rabbitmq:
   name: &rabbit_name rabbitmq
