@@ -62,12 +62,12 @@ const getRangeAppliedFilterValuesFromSearchParams = (fromParameterName, toParame
 
   const range = {
     from: Number(from),
-    to: Number(to)
+    to: Number(to),
   };
 
   return {
     from: isNumber(range.from) ? secondsToMilliseconds(range.from) : undefined,
-    to: isNumber(range.to) ? secondsToMilliseconds(range.to) : undefined
+    to: isNumber(range.to) ? secondsToMilliseconds(range.to) : undefined,
   };
 };
 
@@ -92,10 +92,10 @@ export const FILTER_CONFIGS = {
     },
     searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("cloudAccountId")
+      values: getSelectionAppliedValuesFromSearchParams("cloudAccountId"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -104,11 +104,11 @@ export const FILTER_CONFIGS = {
           ?.filter((item) => item !== null)
           .map((item) => ({
             ...item,
-            value: item.id
+            value: item.id,
           })) ?? [],
       getValue: (item) => item.id,
       toApi: (appliedFilter) => ({
-        cloudAccountId: appliedFilter.values
+        cloudAccountId: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -117,7 +117,138 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.id);
-        })
+        }),
+    },
+    schema: {
+      filterValues: {
+        cloud_account: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["id", "name", "type"],
+            nullable: true,
+            additionalProperties: false,
+            properties: {
+              id: {
+                type: "string",
+              },
+              name: {
+                type: "string",
+              },
+              type: {
+                type: "string",
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+              account_id: {
+                type: "string",
+                nullable: true,
+              },
+            },
+          },
+        },
+      },
+      appliedFilter: {
+        cloudAccountId: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+        },
+      },
+    },
+  },
+  cloudType: {
+    id: "cloudType",
+    apiName: "cloud_type",
+    type: "selection",
+    label: <FormattedMessage id="cloudType" />,
+    labelString: intl.formatMessage({ id: "cloudType" }),
+    icon: <CloudOutlinedIcon />,
+    renderItem: (item) => <CloudLabel id={item.value} name={item.name} type={item.types?.[0]} disableLink dataTestId={`cloud-type-${item.value}`} label={undefined} />,
+    renderSelectedItem: (item) => item.name,
+    searchPredicate: (item, query) => item.name.toLowerCase().includes(query.toLowerCase()),
+    renderPerspectiveItem: (appliedValue, filterValues, { stringify = false } = {}) => {
+      const item = filterValues.find((filterValue) => filterValue.value === appliedValue);
+
+      if (!item) {
+        return appliedValue;
+      }
+
+      return stringify ? item.name : <CloudLabel id={item.value} name={item.name} type={item.types?.[0]} disableLink dataTestId={`cloud-type-${item.value}`} label={undefined} />;
+    },
+    getValuesFromSearchParams: () => ({
+      values: getSelectionAppliedValuesFromSearchParams("cloudType")
+    }),
+    getDefaultValue: () => ({
+      values: []
+    }),
+    isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
+    transformers: {
+      getItems: (availableDataSources) => {
+        if (!availableDataSources) {
+          return [];
+        }
+
+        // Extract unique cloud types from available data sources
+        const cloudTypesSet = new Set();
+        availableDataSources.forEach((item) => {
+          if (item !== null && item.type) {
+            cloudTypesSet.add(item.type);
+          }
+        });
+
+        // Map cloud types to display names
+        const cloudTypeNames = {
+          [AWS_CNR]: "AWS",
+          [AZURE_CNR]: "Azure",
+          [AZURE_TENANT]: "Azure",
+          [GCP_CNR]: "GCP",
+          [GCP_TENANT]: "GCP",
+          [ALIBABA_CNR]: "Alibaba Cloud",
+          [KUBERNETES_CNR]: "Kubernetes",
+          [NEBIUS]: "Nebius",
+          [DATABRICKS]: "Databricks",
+          [ENVIRONMENT]: "Environment"
+        };
+
+        // Group similar cloud types (e.g., AWS_CNR, AZURE_CNR/AZURE_TENANT, GCP_CNR/GCP_TENANT)
+        const cloudTypeGroups = {
+          aws: [AWS_CNR],
+          azure: [AZURE_CNR, AZURE_TENANT],
+          gcp: [GCP_CNR, GCP_TENANT],
+          alibaba: [ALIBABA_CNR],
+          kubernetes: [KUBERNETES_CNR],
+          nebius: [NEBIUS],
+          databricks: [DATABRICKS],
+          environment: [ENVIRONMENT]
+        };
+
+        const uniqueCloudTypes = [];
+        const addedGroups = new Set();
+
+        Object.entries(cloudTypeGroups).forEach(([groupKey, types]) => {
+          const hasType = types.some((type) => cloudTypesSet.has(type));
+          if (hasType && !addedGroups.has(groupKey)) {
+            addedGroups.add(groupKey);
+            // Use the first type in the group as the representative
+            const representativeType = types.find((type) => cloudTypesSet.has(type)) || types[0];
+            uniqueCloudTypes.push({
+              name: cloudTypeNames[representativeType] || representativeType,
+              value: groupKey,
+              types: types
+            });
+          }
+        });
+
+        return uniqueCloudTypes;
+      },
+      getValue: (item) => item.value,
+      toApi: () => ({
+        // Cloud type filter doesn't send to API directly, it's handled by cloudAccountId
+        // Return empty object so it doesn't add any query params
+      }),
+      filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue.value))
     },
     schema: {
       filterValues: {
@@ -138,24 +269,20 @@ export const FILTER_CONFIGS = {
               type: {
                 type: "string",
                 enum: CLOUD_ACCOUNT_TYPES_LIST
-              },
-              account_id: {
-                type: "string",
-                nullable: true
               }
             }
           }
         }
       },
       appliedFilter: {
-        cloudAccountId: {
+        cloudType: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   cloudType: {
     id: "cloudType",
@@ -324,43 +451,45 @@ export const FILTER_CONFIGS = {
         return {
           values: values.filter((value) => isPoolIdWithSubPools(value)).map((value) => value.slice(0, -1)),
           settings: {
-            withSubpools: true
-          }
+            withSubpools: true,
+          },
         };
       }
 
       return {
         values: values,
         settings: {
-          withSubpools: false
-        }
+          withSubpools: false,
+        },
       };
     },
     getDefaultValue: () => ({
       values: [],
       settings: {
-        withSubpools: false
-      }
+        withSubpools: false,
+      },
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (pools) =>
         pools?.map((item) => ({
           ...item,
-          value: item.id
+          value: item.id,
         })) ?? [],
       getValue: (item) => item.id,
       toApi: (appliedFilter) => ({
-        poolId: appliedFilter.settings?.withSubpools ? appliedFilter.values.map((poolId) => `${poolId}+`) : appliedFilter.values
+        poolId: appliedFilter.settings?.withSubpools
+          ? appliedFilter.values.map((poolId) => `${poolId}+`)
+          : appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue.id))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue.id)),
     },
     settings: [
       {
         name: "withSubpools",
-        label: <FormattedMessage id="withSubPools" />
-      }
+        label: <FormattedMessage id="withSubPools" />,
+      },
     ],
     schema: {
       filterValues: {
@@ -372,28 +501,28 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               id: {
-                type: "string"
+                type: "string",
               },
               name: {
-                type: "string"
+                type: "string",
               },
               purpose: {
                 type: "string",
-                enum: POOL_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: POOL_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         poolId: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   ownerId: {
     id: "ownerId",
@@ -415,24 +544,24 @@ export const FILTER_CONFIGS = {
       return item.name;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("ownerId")
+      values: getSelectionAppliedValuesFromSearchParams("ownerId"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (owners) =>
         owners?.map((item) => ({
           ...item,
-          value: item.id
+          value: item.id,
         })) ?? [],
       getValue: (item) => item.id,
       toApi: (appliedFilter) => ({
-        ownerId: appliedFilter.values
+        ownerId: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue.id))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue.id)),
     },
     schema: {
       filterValues: {
@@ -444,24 +573,24 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               id: {
-                type: "string"
+                type: "string",
               },
               name: {
-                type: "string"
-              }
-            }
-          }
-        }
+                type: "string",
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         ownerId: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   region: {
     id: "region",
@@ -498,10 +627,10 @@ export const FILTER_CONFIGS = {
       return stringify ? item.name : <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("region")
+      values: getSelectionAppliedValuesFromSearchParams("region"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -510,17 +639,17 @@ export const FILTER_CONFIGS = {
           if (item === null) {
             return {
               name: intl.formatMessage({ id: "notSet" }),
-              value: EMPTY_UUID
+              value: EMPTY_UUID,
             };
           }
           return {
             ...item,
-            value: item.name
+            value: item.name,
           };
         }) ?? [],
       getValue: (item) => (item === null ? EMPTY_UUID : item.name),
       toApi: (appliedFilter) => ({
-        region: appliedFilter.values
+        region: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -529,7 +658,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.name);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -542,25 +671,25 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               cloud_type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         region: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   serviceName: {
     id: "serviceName",
@@ -597,10 +726,10 @@ export const FILTER_CONFIGS = {
       return stringify ? item.name : <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("serviceName")
+      values: getSelectionAppliedValuesFromSearchParams("serviceName"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -609,17 +738,17 @@ export const FILTER_CONFIGS = {
           if (item === null) {
             return {
               name: intl.formatMessage({ id: "notSet" }),
-              value: EMPTY_UUID
+              value: EMPTY_UUID,
             };
           }
           return {
             ...item,
-            value: item.name
+            value: item.name,
           };
         }) ?? [],
       getValue: (item) => (item === null ? EMPTY_UUID : item.name),
       toApi: (appliedFilter) => ({
-        serviceName: appliedFilter.values
+        serviceName: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -628,7 +757,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.name);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -641,25 +770,25 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               cloud_type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         serviceName: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   resourceType: {
     id: "resourceType",
@@ -673,7 +802,7 @@ export const FILTER_CONFIGS = {
         resourceInfo={{
           resourceType: item.name,
           clusterTypeId: item.type === OPTSCALE_RESOURCE_TYPES.CLUSTER,
-          isEnvironment: item.type === OPTSCALE_RESOURCE_TYPES.ENVIRONMENT
+          isEnvironment: item.type === OPTSCALE_RESOURCE_TYPES.ENVIRONMENT,
         }}
       />
     ),
@@ -695,30 +824,30 @@ export const FILTER_CONFIGS = {
           resourceInfo={{
             resourceType: item.name,
             clusterTypeId: item.type === OPTSCALE_RESOURCE_TYPES.CLUSTER,
-            isEnvironment: item.type === OPTSCALE_RESOURCE_TYPES.ENVIRONMENT
+            isEnvironment: item.type === OPTSCALE_RESOURCE_TYPES.ENVIRONMENT,
           }}
         />
       );
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("resourceType")
+      values: getSelectionAppliedValuesFromSearchParams("resourceType"),
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (resourceTypes) =>
         resourceTypes?.map((item) => ({
           ...item,
-          value: `${item.name}:${item.type}`
+          value: `${item.name}:${item.type}`,
         })) ?? [],
       getValue: (item) => `${item.name}:${item.type}`,
       toApi: (appliedFilter) => ({
-        resourceType: appliedFilter.values
+        resourceType: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(`${filterValue.name}:${filterValue.type}`))
+        filterValues.filter((filterValue) => appliedFilters.includes(`${filterValue.name}:${filterValue.type}`)),
     },
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     schema: {
       filterValues: {
@@ -730,25 +859,25 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               type: {
                 type: "string",
-                enum: Object.values(OPTSCALE_RESOURCE_TYPES)
-              }
-            }
-          }
-        }
+                enum: Object.values(OPTSCALE_RESOURCE_TYPES),
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         resourceType: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   active: {
     id: "active",
@@ -770,43 +899,43 @@ export const FILTER_CONFIGS = {
       return item ? intl.formatMessage({ id: "active" }) : intl.formatMessage({ id: "billingOnly" });
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("active")
+      values: getSelectionAppliedValuesFromSearchParams("active"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (active) =>
         active?.map((value) => ({
           name: value ? intl.formatMessage({ id: "active" }) : intl.formatMessage({ id: "billingOnly" }),
-          value: value
+          value: value,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        active: appliedFilter.values
+        active: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     schema: {
       filterValues: {
         active: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
+            type: "boolean",
+          },
+        },
       },
       appliedFilter: {
         active: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
-      }
-    }
+            type: "boolean",
+          },
+        },
+      },
+    },
   },
   recommendations: {
     id: "recommendations",
@@ -828,10 +957,10 @@ export const FILTER_CONFIGS = {
       return item ? intl.formatMessage({ id: "withRecommendations" }) : intl.formatMessage({ id: "withoutRecommendations" });
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("recommendations")
+      values: getSelectionAppliedValuesFromSearchParams("recommendations"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     transformers: {
       getItems: (recommendations) =>
@@ -839,14 +968,14 @@ export const FILTER_CONFIGS = {
           name: value
             ? intl.formatMessage({ id: "withRecommendations" })
             : intl.formatMessage({ id: "withoutRecommendations" }),
-          value: value
+          value: value,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        recommendations: appliedFilter.values
+        recommendations: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     schema: {
@@ -854,19 +983,19 @@ export const FILTER_CONFIGS = {
         recommendations: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
+            type: "boolean",
+          },
+        },
       },
       appliedFilter: {
         recommendations: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
-      }
-    }
+            type: "boolean",
+          },
+        },
+      },
+    },
   },
   constraintViolated: {
     id: "constraintViolated",
@@ -888,43 +1017,43 @@ export const FILTER_CONFIGS = {
       return item ? intl.formatMessage({ id: "violated" }) : intl.formatMessage({ id: "notViolated" });
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("constraintViolated")
+      values: getSelectionAppliedValuesFromSearchParams("constraintViolated"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (constraintViolated) =>
         constraintViolated?.map((value) => ({
           name: value ? intl.formatMessage({ id: "violated" }) : intl.formatMessage({ id: "notViolated" }),
-          value: value
+          value: value,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        constraintViolated: appliedFilter.values
+        constraintViolated: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     schema: {
       filterValues: {
         constraint_violated: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
+            type: "boolean",
+          },
+        },
       },
       appliedFilter: {
         constraintViolated: {
           type: "array",
           items: {
-            type: "boolean"
-          }
-        }
-      }
-    }
+            type: "boolean",
+          },
+        },
+      },
+    },
   },
   firstSeen: {
     id: "firstSeen",
@@ -954,33 +1083,33 @@ export const FILTER_CONFIGS = {
     getValuesFromSearchParams: () => getRangeAppliedFilterValuesFromSearchParams("firstSeenFrom", "firstSeenTo"),
     getDefaultValue: () => ({
       from: undefined,
-      to: undefined
+      to: undefined,
     }),
     isApplied: (appliedFilter) => !!(appliedFilter.from || appliedFilter.to),
     transformers: {
       getAppliedRange: (range) => ({
         from: range.from ? moveDateToUTC(range.from) : undefined,
-        to: range.to ? moveDateToUTC(range.to) : undefined
+        to: range.to ? moveDateToUTC(range.to) : undefined,
       }),
       getValue: (item) => ({
         from: item.from,
-        to: item.to
+        to: item.to,
       }),
       toApi: (appliedFilter) => ({
         firstSeenFrom: appliedFilter.from ? millisecondsToSeconds(appliedFilter.from) : undefined,
-        firstSeenTo: appliedFilter.to ? millisecondsToSeconds(appliedFilter.to) : undefined
-      })
+        firstSeenTo: appliedFilter.to ? millisecondsToSeconds(appliedFilter.to) : undefined,
+      }),
     },
     schema: {
       appliedFilter: {
         firstSeenFrom: {
-          type: "number"
+          type: "number",
         },
         firstSeenTo: {
-          type: "number"
-        }
-      }
-    }
+          type: "number",
+        },
+      },
+    },
   },
   lastSeen: {
     id: "lastSeen",
@@ -1010,33 +1139,33 @@ export const FILTER_CONFIGS = {
     getValuesFromSearchParams: () => getRangeAppliedFilterValuesFromSearchParams("lastSeenFrom", "lastSeenTo"),
     getDefaultValue: () => ({
       from: undefined,
-      to: undefined
+      to: undefined,
     }),
     isApplied: (appliedFilter) => !!(appliedFilter.from || appliedFilter.to),
     transformers: {
       getAppliedRange: (range) => ({
         from: range.from ? moveDateToUTC(range.from) : undefined,
-        to: range.to ? moveDateToUTC(range.to) : undefined
+        to: range.to ? moveDateToUTC(range.to) : undefined,
       }),
       getValue: (item) => ({
         from: item.from,
-        to: item.to
+        to: item.to,
       }),
       toApi: (appliedFilter) => ({
         lastSeenFrom: appliedFilter.from ? millisecondsToSeconds(appliedFilter.from) : undefined,
-        lastSeenTo: appliedFilter.to ? millisecondsToSeconds(appliedFilter.to) : undefined
-      })
+        lastSeenTo: appliedFilter.to ? millisecondsToSeconds(appliedFilter.to) : undefined,
+      }),
     },
     schema: {
       appliedFilter: {
         lastSeenFrom: {
-          type: "number"
+          type: "number",
         },
         lastSeenTo: {
-          type: "number"
-        }
-      }
-    }
+          type: "number",
+        },
+      },
+    },
   },
   tag: {
     id: "tag",
@@ -1058,43 +1187,43 @@ export const FILTER_CONFIGS = {
       return item;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("tag")
+      values: getSelectionAppliedValuesFromSearchParams("tag"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (tags) =>
         tags?.map((tag) => ({
           name: tag,
-          value: tag
+          value: tag,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        tag: appliedFilter.values
+        tag: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     schema: {
       filterValues: {
         tag: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
+            type: "string",
+          },
+        },
       },
       appliedFilter: {
         tag: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   meta: {
     id: "meta",
@@ -1116,43 +1245,43 @@ export const FILTER_CONFIGS = {
       return getMetaFormattedName(item);
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("meta")
+      values: getSelectionAppliedValuesFromSearchParams("meta"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (metaKeys) =>
         metaKeys?.map((meta) => ({
           name: meta,
-          value: meta
+          value: meta,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        meta: appliedFilter.values
+        meta: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     schema: {
       filterValues: {
         meta: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
+            type: "string",
+          },
+        },
       },
       appliedFilter: {
         meta: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   withoutTag: {
     id: "withoutTag",
@@ -1174,43 +1303,43 @@ export const FILTER_CONFIGS = {
       return item;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("withoutTag")
+      values: getSelectionAppliedValuesFromSearchParams("withoutTag"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
       getItems: (withoutTags) =>
         withoutTags?.map((tag) => ({
           name: tag,
-          value: tag
+          value: tag,
         })) ?? [],
       getValue: (item) => item,
       toApi: (appliedFilter) => ({
-        withoutTag: appliedFilter.values
+        withoutTag: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
-        filterValues.filter((filterValue) => appliedFilters.includes(filterValue))
+        filterValues.filter((filterValue) => appliedFilters.includes(filterValue)),
     },
     schema: {
       filterValues: {
         without_tag: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
+            type: "string",
+          },
+        },
       },
       appliedFilter: {
         withoutTag: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   networkTrafficFrom: {
     id: "networkTrafficFrom",
@@ -1251,10 +1380,10 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("networkTrafficFrom")
+      values: getSelectionAppliedValuesFromSearchParams("networkTrafficFrom"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -1263,19 +1392,19 @@ export const FILTER_CONFIGS = {
           if (item === ANY_NETWORK_TRAFFIC_LOCATION) {
             return {
               name: intl.formatMessage({ id: "any" }),
-              value: item
+              value: item,
             };
           }
 
           return {
             name: item.name,
             value: `${item.name}:${item.cloud_type}`,
-            cloud_type: item.cloud_type
+            cloud_type: item.cloud_type,
           };
         }) ?? [],
       getValue: (item) => `${item.name}:${item.cloud_type}`,
       toApi: (appliedFilter) => ({
-        networkTrafficFrom: appliedFilter.values
+        networkTrafficFrom: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -1284,7 +1413,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(`${filterValue.name}:${filterValue.cloud_type}`);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -1298,31 +1427,31 @@ export const FILTER_CONFIGS = {
                 additionalProperties: false,
                 properties: {
                   name: {
-                    type: "string"
+                    type: "string",
                   },
                   cloud_type: {
                     type: "string",
-                    enum: CLOUD_ACCOUNT_TYPES_LIST
-                  }
-                }
+                    enum: CLOUD_ACCOUNT_TYPES_LIST,
+                  },
+                },
               },
               {
                 type: "string",
-                const: "ANY"
-              }
-            ]
-          }
-        }
+                const: "ANY",
+              },
+            ],
+          },
+        },
       },
       appliedFilter: {
         networkTrafficFrom: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   networkTrafficTo: {
     id: "networkTrafficTo",
@@ -1363,10 +1492,10 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("networkTrafficTo")
+      values: getSelectionAppliedValuesFromSearchParams("networkTrafficTo"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -1375,18 +1504,18 @@ export const FILTER_CONFIGS = {
           if (item === ANY_NETWORK_TRAFFIC_LOCATION) {
             return {
               name: intl.formatMessage({ id: "any" }),
-              value: item
+              value: item,
             };
           }
           return {
             name: item.name,
             value: `${item.name}:${item.cloud_type}`,
-            cloud_type: item.cloud_type
+            cloud_type: item.cloud_type,
           };
         }) ?? [],
       getValue: (item) => `${item.name}:${item.cloud_type}`,
       toApi: (appliedFilter) => ({
-        networkTrafficTo: appliedFilter.values
+        networkTrafficTo: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -1395,7 +1524,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(`${filterValue.name}:${filterValue.cloud_type}`);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -1409,31 +1538,31 @@ export const FILTER_CONFIGS = {
                 additionalProperties: false,
                 properties: {
                   name: {
-                    type: "string"
+                    type: "string",
                   },
                   cloud_type: {
                     type: "string",
-                    enum: CLOUD_ACCOUNT_TYPES_LIST
-                  }
-                }
+                    enum: CLOUD_ACCOUNT_TYPES_LIST,
+                  },
+                },
               },
               {
                 type: "string",
-                const: "ANY"
-              }
-            ]
-          }
-        }
+                const: "ANY",
+              },
+            ],
+          },
+        },
       },
       appliedFilter: {
         networkTrafficTo: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   k8sNode: {
     id: "k8sNode",
@@ -1469,10 +1598,10 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("k8sNode")
+      values: getSelectionAppliedValuesFromSearchParams("k8sNode"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -1481,18 +1610,18 @@ export const FILTER_CONFIGS = {
           if (item === null) {
             return {
               name: intl.formatMessage({ id: "notSet" }),
-              value: EMPTY_UUID
+              value: EMPTY_UUID,
             };
           }
           return {
             name: item.name,
             value: item.name,
-            cloud_type: item.cloud_type
+            cloud_type: item.cloud_type,
           };
         }) ?? [],
       getValue: (item) => (item === null ? EMPTY_UUID : item.name),
       toApi: (appliedFilter) => ({
-        k8sNode: appliedFilter.values
+        k8sNode: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -1501,7 +1630,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.name);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -1514,25 +1643,25 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               cloud_type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         k8sNode: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   k8sService: {
     id: "k8sService",
@@ -1568,10 +1697,10 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("k8sService")
+      values: getSelectionAppliedValuesFromSearchParams("k8sService"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -1580,18 +1709,18 @@ export const FILTER_CONFIGS = {
           if (item === null) {
             return {
               name: intl.formatMessage({ id: "notSet" }),
-              value: EMPTY_UUID
+              value: EMPTY_UUID,
             };
           }
           return {
             name: item.name,
             value: item.name,
-            cloud_type: item.cloud_type
+            cloud_type: item.cloud_type,
           };
         }) ?? [],
       getValue: (item) => (item === null ? EMPTY_UUID : item.name),
       toApi: (appliedFilter) => ({
-        k8sService: appliedFilter.values
+        k8sService: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -1600,7 +1729,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.name);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -1613,25 +1742,25 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               cloud_type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         k8sService: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   k8sNamespace: {
     id: "k8sNamespace",
@@ -1667,10 +1796,10 @@ export const FILTER_CONFIGS = {
       return <CloudLabel name={item.name} type={item.cloud_type} disableLink />;
     },
     getValuesFromSearchParams: () => ({
-      values: getSelectionAppliedValuesFromSearchParams("k8sNamespace")
+      values: getSelectionAppliedValuesFromSearchParams("k8sNamespace"),
     }),
     getDefaultValue: () => ({
-      values: []
+      values: [],
     }),
     isApplied: (appliedFilter) => !isEmptyArray(appliedFilter.values),
     transformers: {
@@ -1679,18 +1808,18 @@ export const FILTER_CONFIGS = {
           if (item === null) {
             return {
               name: intl.formatMessage({ id: "notSet" }),
-              value: EMPTY_UUID
+              value: EMPTY_UUID,
             };
           }
           return {
             name: item.name,
             value: item.name,
-            cloud_type: item.cloud_type
+            cloud_type: item.cloud_type,
           };
         }) ?? [],
       getValue: (item) => (item === null ? EMPTY_UUID : item.name),
       toApi: (appliedFilter) => ({
-        k8sNamespace: appliedFilter.values
+        k8sNamespace: appliedFilter.values,
       }),
       filterFilterValuesByAppliedFilters: (filterValues, appliedFilters) =>
         filterValues.filter((filterValue) => {
@@ -1699,7 +1828,7 @@ export const FILTER_CONFIGS = {
           }
 
           return appliedFilters.includes(filterValue.name);
-        })
+        }),
     },
     schema: {
       filterValues: {
@@ -1712,24 +1841,24 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               name: {
-                type: "string"
+                type: "string",
               },
               cloud_type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         k8sNamespace: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
-  }
+            type: "string",
+          },
+        },
+      },
+    },
+  },
 };

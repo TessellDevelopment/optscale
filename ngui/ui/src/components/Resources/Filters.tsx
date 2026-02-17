@@ -19,13 +19,13 @@ const getSelectionFilterProps = ({ config, onChange, appliedFilters, data }) => 
   searchPredicate: config.searchPredicate,
   onChange: onChange(config.id),
   appliedItems: appliedFilters[config.id],
-  settings: config.settings
+  settings: config.settings,
 });
 
 const getRangeFilterProps = ({ config, onChange, appliedFilters }) => ({
   label: config.label,
   onChange: onChange(config.id),
-  appliedRange: config.transformers.getAppliedRange(appliedFilters[config.id])
+  appliedRange: config.transformers.getAppliedRange(appliedFilters[config.id]),
 });
 
 const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) => {
@@ -139,8 +139,8 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
     onAppliedFiltersChange({
       [type]: {
         from: selectedRange.from ? moveDateFromUTC(startOfDay(selectedRange.from)) : undefined,
-        to: selectedRange.to ? moveDateFromUTC(endOfDay(selectedRange.to)) : undefined
-      }
+        to: selectedRange.to ? moveDateFromUTC(endOfDay(selectedRange.to)) : undefined,
+      },
     });
   };
 
@@ -167,9 +167,9 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
           ?.filter((item) => item.id === currentEmployeeId)
           .map((item) => ({
             name: intl.formatMessage({ id: "assignedToMe" }),
-            value: item.id
+            value: item.id,
           })) ?? [],
-      renderItem: (item) => item.name
+      renderItem: (item) => item.name,
     },
     {
       id: "resourceType",
@@ -179,9 +179,9 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
           ?.filter((item) => ["Volume", "Instance"].includes(item.name))
           .map((item) => ({
             name: item.name,
-            value: `${item.name}:${item.type}`
+            value: `${item.name}:${item.type}`,
           })) ?? [],
-      renderItem: (item) => item.name
+      renderItem: (item) => item.name,
     },
     {
       id: "active",
@@ -191,9 +191,9 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
           ?.filter((item) => item === true)
           .map((item) => ({
             name: intl.formatMessage({ id: "active" }),
-            value: item
+            value: item,
           })) ?? [],
-      renderItem: (item) => item.name
+      renderItem: (item) => item.name,
     },
     {
       id: "constraintViolated",
@@ -203,10 +203,10 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
           ?.filter((item) => item === true)
           .map((item) => ({
             name: intl.formatMessage({ id: "violated" }),
-            value: item
+            value: item,
           })) ?? [],
-      renderItem: (item) => item.name
-    }
+      renderItem: (item) => item.name,
+    },
   ];
 
   const handleApplySuggestion = (updates: Record<string, string[]>) => {
@@ -214,7 +214,7 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
       ownerId: { values: updates.ownerId || [] },
       resourceType: { values: updates.resourceType || [] },
       active: { values: updates.active || [] },
-      constraintViolated: { values: updates.constraintViolated || [] }
+      constraintViolated: { values: updates.constraintViolated || [] },
     });
   };
 
@@ -229,7 +229,7 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
       { key: "resourceType", data: filters.resource_type },
       { key: "active", data: filters.active },
       { key: "recommendations", data: filters.recommendations },
-      { key: "constraintViolated", data: filters.constraint_violated }
+      { key: "constraintViolated", data: filters.constraint_violated },
     ],
     range: [{ key: "firstSeen" }, { key: "lastSeen" }],
     secondary: [
@@ -240,8 +240,8 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
       { key: "networkTrafficTo", data: filters.traffic_to },
       { key: "k8sNode", data: filters.k8s_node },
       { key: "k8sService", data: filters.k8s_service },
-      { key: "k8sNamespace", data: filters.k8s_namespace }
-    ]
+      { key: "k8sNamespace", data: filters.k8s_namespace },
+    ],
   };
 
   const hasAppliedValue = (key) => {
@@ -261,7 +261,7 @@ const ResourceFilters = ({ filters, appliedFilters, onAppliedFiltersChange }) =>
           ownerId: appliedFilters.ownerId.values,
           resourceType: appliedFilters.resourceType.values,
           active: appliedFilters.active.values,
-          constraintViolated: appliedFilters.constraintViolated.values
+          constraintViolated: appliedFilters.constraintViolated.values,
         }}
       />
       {FILTER_GROUPS.primary.map(({ key, data }) => (
