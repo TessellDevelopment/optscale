@@ -261,18 +261,22 @@ export const FILTER_CONFIGS = {
             additionalProperties: false,
             properties: {
               id: {
-                type: "string"
+                type: "string",
               },
               name: {
-                type: "string"
+                type: "string",
               },
               type: {
                 type: "string",
-                enum: CLOUD_ACCOUNT_TYPES_LIST
-              }
-            }
-          }
-        }
+                enum: CLOUD_ACCOUNT_TYPES_LIST,
+              },
+              account_id: {
+                type: "string",
+                nullable: true,
+              },
+            },
+          },
+        },
       },
       appliedFilter: {
         cloudType: {
@@ -405,11 +409,11 @@ export const FILTER_CONFIGS = {
         cloudType: {
           type: "array",
           items: {
-            type: "string"
-          }
-        }
-      }
-    }
+            type: "string",
+          },
+        },
+      },
+    },
   },
   poolId: {
     id: "poolId",
