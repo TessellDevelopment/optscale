@@ -2,6 +2,7 @@ import re
 import os
 import csv
 import logging
+import pandas as pd
 import pyarrow
 import pyarrow.parquet as pq
 from decimal import Decimal
@@ -204,6 +205,11 @@ class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
                             skipped_rows.add(expense_num)
                             continue
                     elif field_name == 'usage_date_time':
+                        # Handle pandas NaT (Not-a-Time) values
+                        if pd.isna(value):
+                            LOG.warning('NaT value found in usage_date_time field, skipping row %s', n)
+                            skipped_rows.add(expense_num)
+                            continue
                         if value.to_pydatetime().replace(
                                 tzinfo=timezone.utc) < self.min_date_import_threshold:
                             skipped_rows.add(expense_num)
@@ -211,6 +217,11 @@ class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
                         # to suit to csv usage_date_time format
                         value = value.strftime('%Y-%m-%d')
                     elif field_name == 'date':
+                        # Handle pandas NaT (Not-a-Time) values
+                        if pd.isna(value):
+                            LOG.warning('NaT value found in date field, skipping row %s', n)
+                            skipped_rows.add(expense_num)
+                            continue
                         if value.to_pydatetime().replace(
                                 tzinfo=timezone.utc) < self.min_date_import_threshold:
                             skipped_rows.add(expense_num)
@@ -220,6 +231,9 @@ class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
                     if value is not None:
                         if isinstance(value, Decimal):
                             value = float(value)
+                        # Additional check for pandas NaT in any timestamp fields
+                        if pd.isna(value):
+                            continue
                         chunk[expense_num][field_name] = value
             expenses = [x for x in chunk if x and
                         chunk.index(x) not in skipped_rows]

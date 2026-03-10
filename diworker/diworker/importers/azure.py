@@ -142,7 +142,14 @@ class AzureImporterBase(BaseReportImporter):
         """
         usage_kind = u.get('kind')
         if usage_kind == 'legacy':
-            u['cost'] = float(u['cost'])
+            # Handle None values by defaulting to 0
+            cost_value = u.get('cost')
+            if cost_value is None:
+                LOG.warning('Cost field is None for resource in legacy format, '
+                           'defaulting to 0. Resource ID: %s',
+                           u.get('id', 'unknown'))
+                cost_value = 0
+            u['cost'] = float(cost_value)
             if 'resource_id' not in u:
                 u['resource_id'] = u['id']
             u['resource_id'] = u['resource_id'].lower()
@@ -152,7 +159,14 @@ class AzureImporterBase(BaseReportImporter):
             u['start_date'] = self.datetime_from_str(u['date'])
             u['end_date'] = u['start_date'] + timedelta(days=1)
         elif usage_kind == 'modern':
-            u['cost'] = float(u['cost_in_billing_currency'])
+            # Handle None values by defaulting to 0
+            cost_value = u.get('cost_in_billing_currency')
+            if cost_value is None:
+                LOG.warning('Cost field is None for resource in modern format, '
+                           'defaulting to 0. Instance: %s',
+                           u.get('instance_name', 'unknown'))
+                cost_value = 0
+            u['cost'] = float(cost_value)
             u['resource_id'] = u['instance_name'].lower()
             if not u['instance_name']:
                 u['resource_id'] = u['product']
@@ -168,7 +182,14 @@ class AzureImporterBase(BaseReportImporter):
             u['start_date'] = self.datetime_from_str(u['date'])
             u['end_date'] = u['start_date'] + timedelta(days=1)
         elif usage_kind == 'raw':
-            u['cost'] = float(u['cost'])
+            # Handle None values by defaulting to 0
+            cost_value = u.get('cost')
+            if cost_value is None:
+                LOG.warning('Cost field is None for resource in raw format, '
+                           'defaulting to 0. Meter ID: %s',
+                           u.get('meter_id', 'unknown'))
+                cost_value = 0
+            u['cost'] = float(cost_value)
             instance_data = json.loads(u['instance_data'])[
                 'Microsoft.Resources']
             u['resource_id'] = instance_data['resourceUri'].lower()
@@ -189,8 +210,15 @@ class AzureImporterBase(BaseReportImporter):
             u['start_date'] = self.datetime_from_str(u['usage_start_time'])
             u['end_date'] = self.datetime_from_str(u['usage_end_time'])
         elif usage_kind == 'export':
-            u['cost'] = float(u.get('cost_in_billing_currency')
-                              or u.get('pre_tax_cost'))
+            # Handle None values by defaulting to 0
+            cost_value = (u.get('cost_in_billing_currency') or
+                         u.get('pre_tax_cost'))
+            if cost_value is None:
+                LOG.warning('Cost fields are None for resource in export format, '
+                           'defaulting to 0. Resource ID: %s',
+                           u.get('resource_id') or u.get('instance_id', 'unknown'))
+                cost_value = 0
+            u['cost'] = float(cost_value)
             resource_id = u.get('resource_id') or u.get('instance_id')
             u['resource_id'] = resource_id.lower()
             if 'additional_info' in u:
