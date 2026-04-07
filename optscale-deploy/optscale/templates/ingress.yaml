@@ -10,19 +10,22 @@ metadata:
     nginx.ingress.kubernetes.io/client-body-buffer-size:  "512m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    {{- if .Values.ssl.force_redirect }}
+    {{- if (.Values.ssl | default dict).force_redirect | default true }}
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     {{- end }}
-    {{- if .Values.ssl.cert_manager.enabled }}
-    cert-manager.io/{{ .Values.ssl.cert_manager.issuer_type }}: {{ .Values.ssl.cert_manager.issuer | quote }}
+    {{- if ((.Values.ssl | default dict).cert_manager | default dict).enabled }}
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     {{- end }}
   name: optscale
   namespace: default
 spec:
   ingressClassName: nginx
   rules:
-  - http:
+  - {{- if .Values.public_ip }}
+    host: {{ .Values.public_ip }}
+    {{- end }}
+    http:
       paths:
       - backend:
           service:
@@ -115,12 +118,11 @@ spec:
               number: {{ .Values.subspector.service.externalPort }}
         path: /subspector
         pathType: Prefix
-{{- if .Values.public_ip }}
-  host: {{ .Values.public_ip }}
-{{- end }}
+{{- if ((.Values.ssl | default dict).cert_manager | default dict).enabled }}
   tls:
-  - secretName: {{ .Values.ssl.certificate_name }}
+  - secretName: defaultcert
 {{- if .Values.public_ip }}
     hosts:
     - {{ .Values.public_ip }}
+{{- end }}
 {{- end }}

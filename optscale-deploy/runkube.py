@@ -42,6 +42,8 @@ LOCAL_TAG = 'local'
 LATEST_TAG = 'latest'
 DOCKER_SOCKET = 'unix:///var/run/docker.sock'
 CONTAINERD_SOCKET = '/run/containerd/containerd.sock'
+CERT_MANAGER_NAMESPACE = 'cert-manager'
+CERT_MANAGER_INSTALL_URL = 'https://github.com/cert-manager/cert-manager/releases/download/{version}/cert-manager.yaml'
 
 LOG = logging.getLogger(__name__)
 
@@ -241,12 +243,23 @@ class Runkube:
 
     def generate_base_overlay(self, update):
         LOG.info("Generating base overlay...")
-        LOG.debug("Getting certificate from k8s cluster...")
-        secret = self.kube_cl.read_namespaced_secret(
-            'defaultcert', OPTSCALE_K8S_NAMESPACE)
-        cert = base64.b64decode(secret.data['tls.crt'])
-        key = base64.b64decode(secret.data['tls.key'])
-        base_overlay = {'optscale_key': key, 'certificates': {'optscale': cert}}
+        base_overlay = {}
+
+        # Try to get existing certificate, but don't fail if it doesn't exist
+        try:
+            LOG.debug("Getting certificate from k8s cluster...")
+            secret = self.kube_cl.read_namespaced_secret(
+                'defaultcert', OPTSCALE_K8S_NAMESPACE)
+            cert = base64.b64decode(secret.data['tls.crt'])
+            key = base64.b64decode(secret.data['tls.key'])
+            base_overlay['optscale_key'] = key
+            base_overlay['certificates'] = {'optscale': cert}
+            LOG.debug("Using existing certificate from secret")
+        except K8SApiException as exc:
+            if json.loads(exc.body).get('code') == 404:
+                LOG.debug("Certificate secret not found, will be created by cert-manager")
+            else:
+                raise
 
         base_overlay['public_ip'] = self.master_ip
         base_overlay['docker_registry'] = self.registry
@@ -377,6 +390,57 @@ class Runkube:
                 GET_LATEST_TAG_CMD, shell=True).decode("utf-8").rstrip()
             LOG.info('Latest release tag: %s' % self.version)
 
+    def load_overlay_config(self):
+        """Load and merge all overlay configurations"""
+        config = {}
+        if self.overlays:
+            for overlay_file in self.overlays:
+                with open(overlay_file, 'r') as f:
+                    overlay_data = yaml.safe_load(f) or {}
+                    config.update(overlay_data)
+        return config
+
+    def install_cert_manager(self):
+        """Install cert-manager using Helm"""
+        LOG.info("Installing cert-manager using Helm...")
+        try:
+            # Check if already installed
+            result = subprocess.run(
+                ['helm', 'list', '-n', 'cert-manager', '-o', 'json'],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0 and 'cert-manager' in result.stdout:
+                LOG.info("cert-manager already installed, skipping")
+                return
+
+            # Add repo and install
+            subprocess.run(['helm', 'repo', 'add', 'jetstack', 'https://charts.jetstack.io'],
+                          check=True, capture_output=True)
+            subprocess.run(['helm', 'repo', 'update'], check=True, capture_output=True)
+            subprocess.run([
+                'helm', 'upgrade', '--install', 'cert-manager', 'jetstack/cert-manager',
+                '--namespace', 'cert-manager', '--create-namespace',
+                '--version', 'v1.14.4', '--set', 'installCRDs=true'
+            ], check=True, capture_output=True)
+
+            # Wait for ready
+            subprocess.run([
+                'kubectl', 'wait', '--for=condition=ready', 'pod',
+                '-l', 'app.kubernetes.io/instance=cert-manager',
+                '-n', 'cert-manager', '--timeout=300s'
+            ], check=True, capture_output=True)
+            LOG.info("cert-manager installed successfully")
+        except subprocess.CalledProcessError as e:
+            LOG.error(f"Failed to install cert-manager: {e}")
+            raise
+
+    def setup_cert_manager(self, config):
+        """Setup cert-manager if enabled"""
+        if config.get('ssl', {}).get('cert_manager', {}).get('enabled'):
+            LOG.info("Setting up cert-manager...")
+            self.install_cert_manager()
+            LOG.info("cert-manager ready. ClusterIssuer and Certificate will be created by Helm templates.")
+
     def start(self, check, update):
         self.check_releases(update)
         self.check_version()
@@ -395,6 +459,12 @@ class Runkube:
             raise Exception("--update-only flag must be used without overlays")
         elif self.overlays:
             overlays.extend(self.overlays)
+
+        # Setup cert-manager if enabled (before helm deployment)
+        if not update and not check:
+            config = self.load_overlay_config()
+            self.setup_cert_manager(config)
+
         overlays_str = ' '.join(['-f {0}'.format(overlay)
                                 for overlay in overlays])
         update_cmd = HELM_UPDATE_CMD.format(

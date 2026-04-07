@@ -142,11 +142,16 @@ ssl:
   # set to the name of your k8s secret which store the certificate
   certificate_name: defaultcert
   cert_manager:
-    # enable the cert-manager integration
     enabled: false
-    # specify the name and the type of the issuer (issuer, cluster-issuer)
-    issuer:
-    issuer_type: issuer
+    # Email for Let's Encrypt notifications (REQUIRED if enabled)
+    email:
+    # Route53 DNS-01 challenge settings
+    dns01:
+      route53:
+        region: region
+        access_key_id: accesskey
+        secret_access_key: secretkey
+        hosted_zone_id: hostedzoneid
 
 # Email verification is disabled by default. Set the flag to `False` to enable it
 disable_email_verification: True
