@@ -1,4 +1,3 @@
-import { FILTER_CONFIGS } from "components/Resources/filterConfigs";
 import {
   CLEAN_EXPENSES_BREAKDOWN_TYPES,
   CLEAN_EXPENSES_BREAKDOWN_TYPES_LIST,
@@ -54,95 +53,18 @@ const filtersSchema = {
   properties: {
     [FILTER_VALUES_PROPERTY]: {
       type: "object",
-      additionalProperties: false,
-      properties: Object.values(FILTER_CONFIGS).reduce(
-        (properties, filter) => ({
-          ...properties,
-          ...(filter.schema.filterValues ?? {}),
-        }),
-        {}
-      ),
+      // Allow any filter properties - users can save perspectives with any filter combination
+      additionalProperties: true,
     },
     [APPLIED_FILTERS_PROPERTY]: {
       type: "object",
-      additionalProperties: false,
-      properties: Object.values(FILTER_CONFIGS).reduce(
-        (properties, filter) => ({
-          ...properties,
-          ...(filter.schema.appliedFilter ?? {}),
-        }),
-        {}
-      ),
+      // Allow any filter properties - users can save perspectives with any filter combination
+      additionalProperties: true,
     },
   },
-  allOf: Object.values(FILTER_CONFIGS)
-    .map((filter) => {
-      const { id, apiName } = filter;
-
-      return [
-        {
-          if: {
-            required: [FILTER_VALUES_PROPERTY],
-            properties: {
-              [FILTER_VALUES_PROPERTY]: {
-                type: "object",
-                required: [apiName],
-                properties: {
-                  [apiName]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-          then: {
-            required: [APPLIED_FILTERS_PROPERTY],
-            properties: {
-              [APPLIED_FILTERS_PROPERTY]: {
-                type: "object",
-                required: [id],
-                properties: {
-                  [id]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          if: {
-            required: [APPLIED_FILTERS_PROPERTY],
-            properties: {
-              [APPLIED_FILTERS_PROPERTY]: {
-                type: "object",
-                required: [id],
-                properties: {
-                  [id]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-          then: {
-            required: [FILTER_VALUES_PROPERTY],
-            properties: {
-              [FILTER_VALUES_PROPERTY]: {
-                type: "object",
-                required: [apiName],
-                properties: {
-                  [apiName]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-        },
-      ];
-    })
-    .flat(),
+  // Removed the strict schema validation for individual filters - this was too restrictive
+  // and prevented users from saving perspectives when data sources had additional properties
+  // beyond what the schema defined (e.g., created_at, deleted_at, config, etc.)
 };
 
 const propertiesSchema = {
