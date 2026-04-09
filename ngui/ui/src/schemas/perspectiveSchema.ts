@@ -75,74 +75,8 @@ const filtersSchema = {
       ),
     },
   },
-  allOf: Object.values(FILTER_CONFIGS)
-    .map((filter) => {
-      const { id, apiName } = filter;
-
-      return [
-        {
-          if: {
-            required: [FILTER_VALUES_PROPERTY],
-            properties: {
-              [FILTER_VALUES_PROPERTY]: {
-                type: "object",
-                required: [apiName],
-                properties: {
-                  [apiName]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-          then: {
-            required: [APPLIED_FILTERS_PROPERTY],
-            properties: {
-              [APPLIED_FILTERS_PROPERTY]: {
-                type: "object",
-                required: [id],
-                properties: {
-                  [id]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          if: {
-            required: [APPLIED_FILTERS_PROPERTY],
-            properties: {
-              [APPLIED_FILTERS_PROPERTY]: {
-                type: "object",
-                required: [id],
-                properties: {
-                  [id]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-          then: {
-            required: [FILTER_VALUES_PROPERTY],
-            properties: {
-              [FILTER_VALUES_PROPERTY]: {
-                type: "object",
-                required: [apiName],
-                properties: {
-                  [apiName]: {
-                    type: "array",
-                  },
-                },
-              },
-            },
-          },
-        },
-      ];
-    })
-    .flat(),
+  // Removed the bidirectional constraint - users should be able to save perspectives
+  // with any combination of filters without being forced to include all filters
 };
 
 const propertiesSchema = {

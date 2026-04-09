@@ -20,7 +20,16 @@ const PayloadField = () => {
     register(FIELD_NAME, {
       validate: {
         isFormatValid: (data) => {
-          const [isValid] = validatePerspectiveSchema(data);
+          const [isValid, errors] = validatePerspectiveSchema(data);
+
+          if (!isValid) {
+            console.error("❌ Perspective schema validation failed:", {
+              data,
+              errors,
+            });
+          } else {
+            console.log("✅ Perspective schema validation passed");
+          }
 
           return isValid ? true : intl.formatMessage({ id: "incorrectDataFormat" });
         },
