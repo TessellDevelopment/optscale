@@ -137,7 +137,8 @@ const TopAlertWrapper = ({ blacklistIds = [] }: TopAlertWrapperProps) => {
         //                  so we need to wait for organizationId. But if user is not logged in — there also wont be organizationId, so we use next flag)
         // userId — presented after login
         // this check means "condition: not logged in new user (!isExistingUser && !userId) OR new user and we know organization id (!isExistingUser && organizationId)"
-        condition: !isExistingUser && (!userId || organizationId),
+        // DISABLED: condition set to false to hide this alert
+        condition: false,
         getContent: () => (
           <Box sx={{ textAlign: "center" }}>
             <FormattedMessage
