@@ -1,4 +1,3 @@
-import { FILTER_CONFIGS } from "components/Resources/filterConfigs";
 import {
   CLEAN_EXPENSES_BREAKDOWN_TYPES,
   CLEAN_EXPENSES_BREAKDOWN_TYPES_LIST,
@@ -54,29 +53,18 @@ const filtersSchema = {
   properties: {
     [FILTER_VALUES_PROPERTY]: {
       type: "object",
-      additionalProperties: false,
-      properties: Object.values(FILTER_CONFIGS).reduce(
-        (properties, filter) => ({
-          ...properties,
-          ...(filter.schema.filterValues ?? {}),
-        }),
-        {}
-      ),
+      // Allow any filter properties - users can save perspectives with any filter combination
+      additionalProperties: true,
     },
     [APPLIED_FILTERS_PROPERTY]: {
       type: "object",
-      additionalProperties: false,
-      properties: Object.values(FILTER_CONFIGS).reduce(
-        (properties, filter) => ({
-          ...properties,
-          ...(filter.schema.appliedFilter ?? {}),
-        }),
-        {}
-      ),
+      // Allow any filter properties - users can save perspectives with any filter combination
+      additionalProperties: true,
     },
   },
-  // Removed the bidirectional constraint - users should be able to save perspectives
-  // with any combination of filters without being forced to include all filters
+  // Removed the strict schema validation for individual filters - this was too restrictive
+  // and prevented users from saving perspectives when data sources had additional properties
+  // beyond what the schema defined (e.g., created_at, deleted_at, config, etc.)
 };
 
 const propertiesSchema = {
