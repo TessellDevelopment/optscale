@@ -64,7 +64,19 @@ class CleanMongoDB(object):
     def mongo_client(self):
         if not self._mongo_client:
             mongo_params = self.get_mongo_params(self.config_client)
-            self._mongo_client = MongoClient(mongo_params[0])
+            # Configure MongoDB client with explicit timeouts and connection pool settings
+            # to prevent connection refused errors during cleanup operations
+            self._mongo_client = MongoClient(
+                mongo_params[0],
+                serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
+                connectTimeoutMS=20000,          # 20 seconds to establish connection
+                socketTimeoutMS=60000,           # 60 seconds for socket operations
+                maxPoolSize=50,                  # Maximum connections in pool
+                minPoolSize=10,                  # Minimum connections to maintain
+                maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
+                retryWrites=True,                # Automatically retry write operations
+                retryReads=True                  # Automatically retry read operations
+            )
         return self._mongo_client
 
     def get_settings(self):

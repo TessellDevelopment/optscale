@@ -45,7 +45,19 @@ def _get_session_to_my_db(config_cl):
 
 def _get_mongo_client(config_cl):
     mongo_params = config_cl.mongo_params()
-    return MongoClient(mongo_params[0])
+    # Configure MongoDB client with explicit timeouts and connection pool settings
+    # to prevent connection refused errors during dataset generation
+    return MongoClient(
+        mongo_params[0],
+        serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
+        connectTimeoutMS=20000,          # 20 seconds to establish connection
+        socketTimeoutMS=60000,           # 60 seconds for socket operations
+        maxPoolSize=50,                  # Maximum connections in pool
+        minPoolSize=10,                  # Minimum connections to maintain
+        maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
+        retryWrites=True,                # Automatically retry write operations
+        retryReads=True                  # Automatically retry read operations
+    )
 
 
 def _get_clickhouse_client(config_cl):
