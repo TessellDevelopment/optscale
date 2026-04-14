@@ -23,6 +23,30 @@ CHUNK_SIZE = 200
 
 class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
 
+    def _sanitize_nat_values(self, expense):
+        """
+        Remove pandas NaT values and fix None values in numeric fields from expense dictionary.
+        NaT values can cause MongoDB serialization errors.
+        None values in numeric fields should default to 0.
+        """
+        keys_to_remove = []
+        numeric_fields_default_zero = ['cost', 'usage_quantity', 'quantity',
+                                        'cost_in_billing_currency', 'cost_in_pricing_currency',
+                                        'cost_in_usd', 'payg_cost_in_billing_currency',
+                                        'payg_cost_in_usd', 'pre_tax_cost', 'effective_price']
+
+        for key, value in expense.items():
+            if pd.isna(value):
+                keys_to_remove.append(key)
+            elif value is None and key in numeric_fields_default_zero:
+                # Default None numeric values to 0
+                expense[key] = 0
+                LOG.warning('Field %s is None, defaulting to 0 for resource %s',
+                           key, expense.get('resource_id', 'unknown'))
+
+        for key in keys_to_remove:
+            del expense[key]
+
     def _download_report_files(self, current_reports, last_import_modified_at):
         for date, reports in current_reports.items():
             for report in reports:
@@ -164,6 +188,7 @@ class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
                 row['_rec_n'] = record_number
                 row['kind'] = 'export'
                 self._fill_custom_fields(row)
+                self._sanitize_nat_values(row)
                 self._clean_tree(row)
                 chunk.append(row)
 
@@ -229,17 +254,24 @@ class AzureExportImporter(CSVBaseReportImporter, AzureImporterBase):
                         # to suit to csv usage_date_time format
                         value = value.strftime('%m/%d/%Y')
                     if value is not None:
-                        if isinstance(value, Decimal):
-                            value = float(value)
                         # Additional check for pandas NaT in any timestamp fields
                         if pd.isna(value):
                             continue
+                        # Handle Decimal conversion with None check
+                        if isinstance(value, Decimal):
+                            try:
+                                value = float(value)
+                            except (ValueError, TypeError):
+                                LOG.warning('Could not convert Decimal to float for field %s, skipping', field_name)
+                                continue
                         chunk[expense_num][field_name] = value
             expenses = [x for x in chunk if x and
                         chunk.index(x) not in skipped_rows]
             for expense in expenses:
                 expense['kind'] = 'export'
                 self._fill_custom_fields(expense)
+                # Remove any remaining NaT values after _fill_custom_fields
+                self._sanitize_nat_values(expense)
             if expenses:
                 self.update_raw_records(expenses)
                 now = datetime.now(tz=timezone.utc)
