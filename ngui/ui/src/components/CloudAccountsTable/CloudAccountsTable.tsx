@@ -101,6 +101,7 @@ const CloudAccountsTable = ({ cloudAccounts = [], isLoading = false }) => {
         header: intl.formatMessage({ id: "type" }),
         accessorKey: "type",
         cell: ({ cell }) => <CloudType type={cell.getValue()} />,
+        defaultSort: "asc",
       },
       {
         header: intl.formatMessage({ id: "resourcesChargedThisMonth" }),
@@ -113,7 +114,6 @@ const CloudAccountsTable = ({ cloudAccounts = [], isLoading = false }) => {
         id: "details.cost",
         accessorFn: (originalRow) => originalRow.details?.cost,
         cell: ({ cell }) => <FormattedMoney type={FORMATTED_MONEY_TYPES.COMMON} value={cell.getValue()} />,
-        defaultSort: "desc",
       },
       {
         header: intl.formatMessage({ id: "expensesForecastThisMonth" }),
