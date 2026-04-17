@@ -70,6 +70,9 @@ rabbitmq:
   replicaCount: 1
   mnesiaSize: 10Gi
   memory_limit: 512
+  # Consumer timeout - increased from default 3 hours (10800000) to 8 hours (28800000)
+  # to handle long-running import tasks with large CSV files
+  consumer_timeout: 28800000  # 8 hours in milliseconds
   enableClassicMirroring: false     # MUST be false on 4.x
   enableQuorumDefaults: true        # optional: default policy for quorum queues
   quorum:
@@ -267,7 +270,7 @@ minio:
 
 diworker:
   name: &diworker_name diworker
-  replicaCount: 1
+  replicaCount: 3
   image:
     id:
     repository: *diworker_name

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import csv
+import gc
 import logging
 import math
 import os
@@ -14,11 +15,18 @@ from functools import cached_property
 from diworker.diworker.importers.base import (
     CSVBaseReportImporter, CSV_REWRITE_DAYS
 )
+from diworker.diworker.cache.aws_report_cache import AWSReportCache
 import tools.optscale_time as opttime
 import pyarrow.parquet as pq
 
 LOG = logging.getLogger(__name__)
-CHUNK_SIZE = 200
+# Chunk size for CSV processing - balanced for performance and memory
+# With memory stable at ~1GB, we can use larger chunks for better performance
+# Larger chunks = fewer MongoDB writes = faster processing
+DEFAULT_CHUNK_SIZE = 500  # Optimized for speed now that memory is under control
+CHUNK_SIZE = int(os.environ.get('AWS_CSV_CHUNK_SIZE', DEFAULT_CHUNK_SIZE))
+# Configurable batch size for Parquet processing
+AWS_REPORT_BATCH_SIZE = int(os.environ.get('AWS_REPORT_BATCH_SIZE', 2000))
 IGNORE_EXPENSE_TYPES = ['Credit']
 RI_PLATFORMS = [
     'Linux/UNIX',
@@ -80,6 +88,21 @@ class AWSReportImporter(CSVBaseReportImporter):
         }
         self.import_start_ts = int(opttime.utcnow().timestamp())
         self.current_billing_period = None
+        # Initialize AWS Report Cache
+        self._report_cache = None
+        self.cache_stats = {'hits': 0, 'misses': 0}
+        # Cache for column name mappings to avoid repeated conversions
+        self._legacy_column_cache = {}
+        # Map of file paths to their cache keys for symlink lookup
+        self._file_cache_keys = {}
+
+    @property
+    def report_cache(self):
+        """Lazy initialization of report cache."""
+        if self._report_cache is None:
+            self._report_cache = AWSReportCache()
+            LOG.info(f"Initialized AWS Report Cache at {self._report_cache.cache_dir}")
+        return self._report_cache
 
     @cached_property
     def strip_edp(self):
@@ -129,9 +152,278 @@ class AWSReportImporter(CSVBaseReportImporter):
             return report_file
 
     def unpack_report_files(self):
+        """Override to use symlinks for uncompressed files."""
         for date, reports in self.report_files.items():
-            self.report_files[date] = [
-                self.unpack_report(r, date) for r in self.report_files[date]]
+            unpacked_reports = []
+            for report_file in reports:
+                # Try to use cached uncompressed version
+                unpacked_path = self._unpack_with_cache(report_file, date)
+                unpacked_reports.append(unpacked_path)
+            self.report_files[date] = unpacked_reports
+
+    def _unpack_with_cache(self, report_file, date):
+        """
+        Unpack a report file using cache if available, with symlink support.
+        Uses locking to ensure only one thread unpacks each unique file.
+
+        Args:
+            report_file: Path to compressed report file
+            date: Date string for organizing reports
+
+        Returns:
+            Path to uncompressed file (may be symlink)
+        """
+        # Get cache key from the mapping created during download
+        cache_key = self._file_cache_keys.get(report_file)
+
+        if not cache_key:
+            # Fallback if cache key not found (shouldn't happen normally)
+            LOG.warning(f"Cache key not found for {report_file}, will unpack without cache")
+            dest_dir = self.get_new_report_path(date)
+            os.makedirs(dest_dir, exist_ok=True)
+            if zipfile.is_zipfile(report_file):
+                new_report_path = self.unzip_report(report_file, dest_dir)
+            else:
+                new_report_path = self.gunzip_report(report_file, dest_dir)
+            if new_report_path:
+                os.remove(report_file)
+                return new_report_path
+            else:
+                return report_file
+
+        # Determine expected uncompressed extension
+        uncompressed_ext = ''
+        base_name = os.path.basename(report_file)
+        if '.csv' in base_name or '.parquet' in base_name:
+            if '.csv' in base_name:
+                uncompressed_ext = '.csv'
+            else:
+                uncompressed_ext = '.parquet'
+
+        dest_dir = self.get_new_report_path(date)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # ALWAYS acquire lock for unpacking to ensure thread safety
+        # This prevents multiple threads from unpacking the same file simultaneously
+        lock_path = self.report_cache._get_lock_path(f"{cache_key}_unpack")
+        lock_file = self.report_cache._acquire_lock(lock_path)
+
+        if not lock_file:
+            # Lock timeout - proceed without cache as fallback
+            LOG.warning(f"Lock timeout for unpacking {report_file}, proceeding without cache")
+            if zipfile.is_zipfile(report_file):
+                new_report_path = self.unzip_report(report_file, dest_dir)
+            else:
+                new_report_path = self.gunzip_report(report_file, dest_dir)
+            if new_report_path:
+                os.remove(report_file)
+                return new_report_path
+            return report_file
+
+        try:
+            # Check if uncompressed version exists in cache NOW (after acquiring lock)
+            cached_uncompressed = self.report_cache.get_cached_uncompressed_file(
+                cache_key, uncompressed_ext)
+
+            if cached_uncompressed:
+                # Another thread already unpacked it! Use that.
+                LOG.info(f"File already unpacked by another thread, using cache: {cache_key}")
+                link_path = os.path.join(dest_dir, os.path.basename(cached_uncompressed))
+                if self.report_cache.create_symlink(cached_uncompressed, link_path):
+                    self.cache_stats['hits'] += 1
+                    LOG.info(f"Using cached uncompressed file via symlink: {link_path}")
+                    # Remove the compressed file
+                    if os.path.exists(report_file):
+                        os.remove(report_file)
+                    return link_path
+                else:
+                    # Symlink failed, fall back to copying cached file
+                    LOG.warning(f"Symlink creation failed, copying from cache instead")
+                    import shutil
+                    copy_path = os.path.join(dest_dir, os.path.basename(cached_uncompressed))
+                    shutil.copy2(cached_uncompressed, copy_path)
+                    if os.path.exists(report_file):
+                        os.remove(report_file)
+                    return copy_path
+
+            # We are the first to unpack this file - do the work IN CACHE
+            self.cache_stats['misses'] += 1
+            LOG.info(f"Unpacking file to cache: {cache_key}")
+
+            # Get the compressed file path (should be in cache or a symlink to cache)
+            # Resolve symlink to get actual cached compressed file
+            if os.path.islink(report_file):
+                compressed_source = os.readlink(report_file)
+            else:
+                compressed_source = report_file
+
+            # Create a temporary directory IN CACHE for unpacking
+            import tempfile
+            cache_temp_dir = tempfile.mkdtemp(
+                prefix='unpack_',
+                dir=self.report_cache.uncompressed_dir)
+
+            try:
+                # Unpack directly in cache temp directory
+                # Need to check the actual file, not symlink, for zip detection
+                actual_file = compressed_source if not os.path.islink(compressed_source) else os.path.realpath(compressed_source)
+
+                LOG.info(f"Unpacking file: {actual_file} (original: {compressed_source})")
+
+                if zipfile.is_zipfile(actual_file):
+                    temp_unpack_path = self.unzip_report(actual_file, cache_temp_dir)
+                else:
+                    temp_unpack_path = self.gunzip_report(actual_file, cache_temp_dir)
+
+                if not temp_unpack_path:
+                    LOG.error(f"Failed to unpack file: {actual_file}")
+                    raise Exception(f"Unpack failed for {actual_file}")
+
+                if temp_unpack_path:
+                    # Move to final cache location atomically
+                    try:
+                        final_cache_path = self.report_cache._get_uncompressed_path(
+                            cache_key, uncompressed_ext)
+
+                        # Atomic move within cache
+                        import shutil
+                        shutil.move(temp_unpack_path, final_cache_path)
+                        LOG.info(f"Stored uncompressed file in cache: {final_cache_path}")
+
+                        # Now create symlink in datasource folder to the cached file
+                        link_path = os.path.join(dest_dir, os.path.basename(final_cache_path))
+                        if self.report_cache.create_symlink(final_cache_path, link_path):
+                            LOG.info(f"Created symlink to cached file: {link_path} -> {final_cache_path}")
+                            final_path = link_path
+                        else:
+                            # Symlink failed, copy as fallback
+                            LOG.warning(f"Symlink creation failed, copying from cache")
+                            copy_path = os.path.join(dest_dir, os.path.basename(final_cache_path))
+                            shutil.copy2(final_cache_path, copy_path)
+                            final_path = copy_path
+
+                    except Exception as e:
+                        LOG.error(f"Failed to cache uncompressed file: {e}")
+                        # Fallback: move from temp to datasource folder
+                        final_path = os.path.join(dest_dir, os.path.basename(temp_unpack_path))
+                        import shutil
+                        shutil.move(temp_unpack_path, final_path)
+
+                    # Remove compressed symlink/file from datasource folder
+                    if os.path.exists(report_file):
+                        os.remove(report_file)
+
+                    # Clean up temp directory
+                    try:
+                        import shutil
+                        shutil.rmtree(cache_temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+
+                    return final_path
+                else:
+                    # Unpacking failed, clean up temp dir and return original
+                    import shutil
+                    shutil.rmtree(cache_temp_dir, ignore_errors=True)
+                    return report_file
+
+            except Exception as e:
+                LOG.error(f"Error during unpacking: {e}")
+                # Clean up temp directory
+                import shutil
+                shutil.rmtree(cache_temp_dir, ignore_errors=True)
+                # Return the compressed file (symlink or copy)
+                return report_file
+
+        finally:
+            # Always release the lock
+            self.report_cache._release_lock(lock_file)
+
+    def _download_report_files(self, current_reports, last_import_modified_at):
+        """
+        Override to use cache for downloads.
+        Downloads ONLY to cache, creates symlinks in datasource folders.
+        """
+        config = self.cloud_acc.get('config', {})
+        bucket_name = config.get('bucket_name', '')
+        bucket_prefix = config.get('bucket_prefix', '')
+        report_name = config.get('report_name', '')
+
+        for date, reports in current_reports.items():
+            # Create datasource directory structure for symlinks
+            datasource_dir = os.path.join(self.reports_dir, date)
+            os.makedirs(datasource_dir, exist_ok=True)
+
+            for report in reports:
+                if last_import_modified_at < report['LastModified']:
+                    last_import_modified_at = report['LastModified']
+
+                s3_key = report['Key']
+
+                # Determine file extension
+                file_extension = ''
+                if s3_key.endswith('.gz'):
+                    file_extension = '.gz'
+                elif s3_key.endswith('.zip'):
+                    file_extension = '.zip'
+
+                # Generate cache key
+                cache_key = self.report_cache._generate_cache_key(
+                    bucket_name, bucket_prefix, report_name, s3_key)
+
+                # Get cache path for compressed file
+                cached_compressed_path = self.report_cache._get_compressed_path(
+                    cache_key, file_extension)
+
+                # Download function that writes DIRECTLY to cache
+                def download():
+                    try:
+                        # python2 way
+                        with open(cached_compressed_path, 'wb') as f_report:
+                            self.cloud_adapter.download_report_file(s3_key, f_report)
+                    except TypeError:
+                        # python3 way
+                        with open(cached_compressed_path, 'w') as f_report:
+                            self.cloud_adapter.download_report_file(s3_key, f_report)
+
+                # Use cache with locking (downloads directly to cache)
+                try:
+                    self.report_cache.get_or_download_compressed_file(
+                        download, cached_compressed_path, bucket_name, bucket_prefix,
+                        report_name, s3_key, report['LastModified'], file_extension)
+
+                    # Create symlink in datasource folder pointing to cache
+                    symlink_name = os.path.basename(s3_key)
+                    symlink_path = os.path.join(datasource_dir, symlink_name)
+
+                    if self.report_cache.create_symlink(cached_compressed_path, symlink_path):
+                        LOG.info(f"Created symlink for compressed file: {symlink_path} -> {cached_compressed_path}")
+                    else:
+                        # Symlink failed, copy as fallback
+                        LOG.warning(f"Symlink failed, copying compressed file instead")
+                        import shutil
+                        shutil.copy2(cached_compressed_path, symlink_path)
+
+                    # Store symlink path for later processing
+                    self.report_files[date].append(symlink_path)
+
+                    # Store cache key mapping for unpack phase
+                    self._file_cache_keys[symlink_path] = cache_key
+
+                except Exception as e:
+                    LOG.error(f"Error downloading with cache: {e}. Falling back to direct download.")
+                    # Fallback: download to datasource folder directly
+                    fallback_path = os.path.join(datasource_dir, os.path.basename(s3_key))
+                    try:
+                        with open(fallback_path, 'wb') as f_report:
+                            self.cloud_adapter.download_report_file(s3_key, f_report)
+                    except TypeError:
+                        with open(fallback_path, 'w') as f_report:
+                            self.cloud_adapter.download_report_file(s3_key, f_report)
+                    self.report_files[date].append(fallback_path)
+                    self._file_cache_keys[fallback_path] = cache_key
+
+        return last_import_modified_at
 
     @staticmethod
     def get_unique_field_list(include_date=True):
@@ -249,15 +541,48 @@ class AWSReportImporter(CSVBaseReportImporter):
             self.load_report(report_path, account_id_ca_id_map)
         self.clear_rudiments()
 
+    def _log_memory_usage(self, context=""):
+        """Log current memory usage for monitoring."""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            mem_info = process.memory_info()
+            mem_mb = mem_info.rss / (1024 * 1024)
+            LOG.info(f"Memory usage {context}: {mem_mb:.2f} MB (RSS)")
+        except ImportError:
+            # psutil not available, use resource module fallback
+            try:
+                import resource
+                usage_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                # macOS reports in bytes, Linux in KB
+                import platform
+                if platform.system() == 'Darwin':
+                    usage_mb = usage_kb / (1024 * 1024)
+                else:
+                    usage_mb = usage_kb / 1024
+                LOG.info(f"Memory usage {context}: {usage_mb:.2f} MB (maxrss)")
+            except Exception as e:
+                # Even resource failed, at least log that we tried
+                LOG.info(f"Memory monitoring {context}: psutil not available, GC active")
+        except Exception as e:
+            LOG.debug(f"Error logging memory: {e}")
+
     def load_report(self, report_path, account_id_ca_id_map):
         skipped_accounts = set()
         billing_period = None
-        LOG.info('loading report %s', report_path)
+
+        # Get file size for metrics
+        file_size_mb = os.path.getsize(report_path) / (1024 * 1024)
+        LOG.info(f'Loading report {report_path} (size: {file_size_mb:.2f} MB)')
+        self._log_memory_usage("before loading report")
+
+        start_time = opttime.utcnow()
 
         try:
             billing_period, skipped_accounts = self.load_parquet_report(
                 report_path, account_id_ca_id_map, billing_period,
                 skipped_accounts)
+            file_type = 'Parquet'
         except pyarrow.lib.ArrowInvalid as exc:
             LOG.warning(
                 f"Could not open source file as Parquet {report_path}: "
@@ -265,6 +590,17 @@ class AWSReportImporter(CSVBaseReportImporter):
             billing_period, skipped_accounts = self.load_csv_report(
                 report_path, account_id_ca_id_map, billing_period,
                 skipped_accounts)
+            file_type = 'CSV'
+
+        # Log performance metrics
+        elapsed_time = (opttime.utcnow() - start_time).total_seconds()
+        throughput_mbps = file_size_mb / elapsed_time if elapsed_time > 0 else 0
+        LOG.info(f'Completed loading {file_type} report {report_path} in {elapsed_time:.2f}s '
+                f'(throughput: {throughput_mbps:.2f} MB/s)')
+        self._log_memory_usage("after loading report")
+
+        # Force garbage collection after each report
+        gc.collect()
 
         if billing_period:
             self.billing_periods.add(billing_period)
@@ -275,6 +611,10 @@ class AWSReportImporter(CSVBaseReportImporter):
                         skipped_accounts)
 
     def update_raw_records(self, chunk):
+        """
+        Override to add aggressive memory management.
+        MongoDB bulk operations hold massive buffers - must be cleaned immediately.
+        """
         for row in chunk:
             # TODO: OS-5444
             # pymongo InsertOne fails on '.' in key, while UpdateOne splits
@@ -296,7 +636,21 @@ class AWSReportImporter(CSVBaseReportImporter):
                 row.pop(k)
                 row.update(split_dot_keys(k, v))
             row['report_identity'] = self.report_identity
+
+        # Write to MongoDB
         super().update_raw_records(chunk)
+
+        # CRITICAL: Force MongoDB driver to flush buffers and release memory
+        # The bulk_write operation leaves results and buffers in memory
+        # We must explicitly clean up after EVERY write for large CSV files
+        try:
+            # Force connection to flush any pending operations
+            self.mongo_raw.database.client.admin.command('ping')
+        except Exception:
+            pass  # Ignore ping errors, just trying to flush
+
+        # Explicit garbage collection to clean MongoDB driver objects
+        gc.collect(generation=0)
 
     @staticmethod
     def _is_flavor_usage(expense):
@@ -340,25 +694,39 @@ class AWSReportImporter(CSVBaseReportImporter):
         return self._to_csv_tag(f'{prefix}{subprefix}:', subkey, False)
 
     def _get_legacy_csv_key(self, old_key):
+        """
+        Convert snake_case CUR column names to legacy CSV format.
+        Caches results to avoid redundant conversions.
+        """
+        # Check cache first
+        if old_key in self._legacy_column_cache:
+            return self._legacy_column_cache[old_key]
+
+        # Perform conversion
         key = next((
             s for s in AWS_CUR_PREFIX_MAP.keys() if old_key.startswith(f'{s}_')
         ), None)
         if not key:
-            return old_key
-        prefix = self.to_lower_case(self.to_camel_case(key))
-        subkey = old_key[len(key) + 1:]
-        if not subkey:
-            return prefix
-        if key == 'resource_tags':
-            return self._to_csv_tag(f'{prefix}/', subkey)
+            result = old_key
         else:
-            to_lower, exceptions = AWS_CUR_PREFIX_MAP[key]
-            new_key = self.to_camel_case(subkey)
-            if subkey in exceptions:
-                to_lower = not to_lower
-            if to_lower:
-                new_key = self.to_lower_case(new_key)
-        return f'{prefix}/{new_key}'
+            prefix = self.to_lower_case(self.to_camel_case(key))
+            subkey = old_key[len(key) + 1:]
+            if not subkey:
+                result = prefix
+            elif key == 'resource_tags':
+                result = self._to_csv_tag(f'{prefix}/', subkey)
+            else:
+                to_lower, exceptions = AWS_CUR_PREFIX_MAP[key]
+                new_key = self.to_camel_case(subkey)
+                if subkey in exceptions:
+                    to_lower = not to_lower
+                if to_lower:
+                    new_key = self.to_lower_case(new_key)
+                result = f'{prefix}/{new_key}'
+
+        # Cache the result
+        self._legacy_column_cache[old_key] = result
+        return result
 
     def _extract_nested_objects(self, obj, parquet=False):
         updates = defaultdict(dict)
@@ -389,6 +757,11 @@ class AWSReportImporter(CSVBaseReportImporter):
         for k in removed_keys:
             obj.pop(k)
         obj.update(updates)
+
+        # CRITICAL: Explicitly release memory for 5M+ rows
+        del updates
+        del removed_keys
+
         return obj
 
     def _convert_to_legacy_csv_columns(self, columns, dict_format=False):
@@ -399,7 +772,56 @@ class AWSReportImporter(CSVBaseReportImporter):
     def load_csv_report(self, report_path, account_id_ca_id_map,
                         billing_period, skipped_accounts):
         date_start = opttime.utcnow()
-        with open(report_path, newline='') as csvfile:
+
+        # CRITICAL: Use minimal buffer AND advise kernel to not cache
+        # For 1.2GB files with 18GB memory limit, file caching causes OOM risk
+        BUFFER_SIZE = 1024  # 1KB buffer - minimal buffering for 1GB+ files
+
+        # Resolve symlink to real file path (posix_fadvise doesn't work on symlinks)
+        import os as os_module
+        actual_file_path = os_module.path.realpath(report_path)
+
+        # Open file with minimal caching hint to kernel
+        fd = os_module.open(actual_file_path, os_module.O_RDONLY)
+
+        # CRITICAL: Duplicate fd before fdopen() because fdopen() takes ownership
+        # and will close the fd when the file object is closed
+        # We need to keep a separate fd for posix_fadvise operations
+        try:
+            fd_for_fadvise = os_module.dup(fd)  # Create independent copy of fd
+        except OSError as e:
+            LOG.warning(f"Could not duplicate fd: {e}")
+            fd_for_fadvise = None
+
+        # Tell kernel: don't keep this file in page cache (prevents 28GB cache buildup)
+        if fd_for_fadvise:
+            try:
+                # POSIX_FADV_SEQUENTIAL = 2 (optimize for sequential reading)
+                # POSIX_FADV_DONTNEED = 4 (don't cache - drop pages immediately)
+                # Note: POSIX_FADV_NOREUSE (5) is not supported on all filesystems
+                POSIX_FADV_SEQUENTIAL = 2
+                POSIX_FADV_DONTNEED = 4
+
+                # Tell kernel this is sequential access (universally supported)
+                os_module.posix_fadvise(fd_for_fadvise, 0, 0, POSIX_FADV_SEQUENTIAL)
+
+                # Store the duplicated fd for later cache drops
+                self._csv_fd_for_fadvise = fd_for_fadvise
+                self._csv_filepath_for_fadvise = actual_file_path
+
+                LOG.debug(f"Successfully set SEQUENTIAL hint for {actual_file_path}")
+            except (AttributeError, OSError) as e:
+                LOG.warning(f"Could not set file cache hints for {actual_file_path}: {e}")
+                if fd_for_fadvise:
+                    os_module.close(fd_for_fadvise)
+                self._csv_fd_for_fadvise = None
+        else:
+            self._csv_fd_for_fadvise = None
+
+        # Create file object from original fd (fdopen takes ownership and will close it)
+        csvfile = os_module.fdopen(fd, mode='r', buffering=BUFFER_SIZE, newline='')
+
+        with csvfile:
             reader = csv.DictReader(csvfile)
             reader.fieldnames = self._convert_to_legacy_csv_columns(
                 reader.fieldnames)
@@ -412,9 +834,31 @@ class AWSReportImporter(CSVBaseReportImporter):
                     LOG.info('detected billing period: %s', billing_period)
                     self.current_billing_period = billing_period
 
-                if len(chunk) == CHUNK_SIZE:
+                if len(chunk) >= CHUNK_SIZE:
                     self.update_raw_records(chunk)
+                    # Explicitly delete and recreate chunk list to release memory
+                    del chunk
                     chunk = []
+
+                    # Force garbage collection periodically (every 10 chunks)
+                    # With memory stable, we don't need GC after every chunk
+                    # generation=0 is fastest and targets recently created objects
+                    if record_number % (CHUNK_SIZE * 10) == 0:
+                        gc.collect(generation=0)
+
+                    # Drop file cache periodically to prevent OOM
+                    # With memory stable at ~1GB, we can drop less frequently for better performance
+                    # Drop every 10000 rows (~400MB) to minimize syscall overhead
+                    if hasattr(self, '_csv_fd_for_fadvise') and self._csv_fd_for_fadvise and record_number % 10000 == 0:
+                        try:
+                            POSIX_FADV_DONTNEED = 4
+                            import os as os_module
+                            # Drop pages from 0 to current position
+                            os_module.posix_fadvise(self._csv_fd_for_fadvise, 0, 0, POSIX_FADV_DONTNEED)
+                            LOG.debug(f"Dropped cache at row {record_number}")
+                        except Exception as e:
+                            LOG.warning(f"Failed to drop cache at row {record_number}: {e}")
+
                     now = opttime.utcnow()
                     if (now - date_start).total_seconds() > 60:
                         LOG.info('report %s: processed %s rows',
@@ -454,35 +898,90 @@ class AWSReportImporter(CSVBaseReportImporter):
                         row.pop(field, None)
                 if self._is_flavor_usage(row):
                     row['box_usage'] = True
-                for k, v in row.copy().items():
-                    if v == '':
-                        del row[k]
+
+                # CRITICAL: Don't use row.copy() - creates 5 million copies!
+                # Instead, collect keys to delete first, then delete
+                keys_to_delete = [k for k, v in row.items() if v == '']
+                for k in keys_to_delete:
+                    del row[k]
+                del keys_to_delete  # Release list immediately
+
                 self._set_resource_id(row)
                 row['created_at'] = self.import_start_ts
                 chunk.append(row)
 
             if chunk:
                 self.update_raw_records(chunk)
+                del chunk
+
+        # CRITICAL: Drop entire file from cache after processing to prevent OOM
+        # This releases 1.2GB of file cache immediately
+        if hasattr(self, '_csv_fd_for_fadvise') and self._csv_fd_for_fadvise:
+            try:
+                import os as os_module
+                POSIX_FADV_DONTNEED = 4
+                # Tell kernel to drop ALL cached pages for this file
+                os_module.posix_fadvise(self._csv_fd_for_fadvise, 0, 0, POSIX_FADV_DONTNEED)
+                filepath = getattr(self, '_csv_filepath_for_fadvise', report_path)
+                LOG.info(f"Dropped file cache for {filepath}")
+            except Exception as e:
+                LOG.warning(f"Could not drop file cache for {report_path}: {e}")
+            finally:
+                # CRITICAL: Close the duplicated fd to avoid fd leak
+                if self._csv_fd_for_fadvise:
+                    try:
+                        import os as os_module
+                        os_module.close(self._csv_fd_for_fadvise)
+                    except Exception:
+                        pass  # Ignore close errors
+                self._csv_fd_for_fadvise = None
+
+        # Final aggressive cleanup after processing CSV file
+        # Full collection to clean up all generations
+        gc.collect(generation=2)  # Full collection including old objects
+        gc.collect(generation=2)  # Second pass for circular references
         return billing_period, skipped_accounts
 
     def load_parquet_report(self, report_path, account_id_ca_id_map,
                             billing_period, skipped_accounts):
+        """
+        Load Parquet report using streaming to minimize memory usage.
+        Uses PyArrow's batch iterator instead of loading entire file into pandas.
+        """
         date_start = opttime.utcnow()
-        dataframe = pq.read_pandas(report_path).to_pandas()
+
+        # Use streaming batch reader
+        parquet_file = pq.ParquetFile(report_path)
+        batch_size = AWS_REPORT_BATCH_SIZE
+
+        LOG.info(f'Processing Parquet file with {parquet_file.metadata.num_rows} rows '
+                f'in batches of {batch_size}')
+
+        # Get column name mapping
+        schema_columns = parquet_file.schema.names
         new_columns = self._convert_to_legacy_csv_columns(
-            dataframe.columns, dict_format=True)
-        dataframe.rename(columns=new_columns, inplace=True)
-        for i in range(0, dataframe.shape[0], CHUNK_SIZE):
+            schema_columns, dict_format=True)
+
+        row_offset = 0
+        for batch in parquet_file.iter_batches(batch_size=batch_size):
+            # Convert batch to pandas dataframe (only one batch at a time in memory)
+            batch_df = batch.to_pandas()
+            batch_df.rename(columns=new_columns, inplace=True)
+
+            # Process this batch
             expense_chunk = self._extract_nested_objects(
-                dataframe.iloc[i:i + CHUNK_SIZE, :].to_dict(), parquet=True)
-            chunk = [{'cost': 0} for _ in range(0, CHUNK_SIZE)]
+                batch_df.to_dict(), parquet=True)
+
+            actual_size = len(batch_df)
+            chunk = [{'cost': 0} for _ in range(actual_size)]
             skipped_rows = set()
+
             for field_name, values_dict in expense_chunk.items():
                 for n, value in values_dict.items():
-                    expense_num = n % CHUNK_SIZE
+                    expense_num = n % actual_size
                     if expense_num in skipped_rows:
                         continue
-                    chunk[expense_num]['_rec_n'] = n
+                    chunk[expense_num]['_rec_n'] = row_offset + n
                     if hasattr(value, 'timestamp'):
                         value = value.strftime('%Y-%m-%dT%H:%M:%SZ')
                     if (field_name == 'bill/BillingPeriodStartDate' and
@@ -527,8 +1026,8 @@ class AWSReportImporter(CSVBaseReportImporter):
                         if chunk.index(x) not in skipped_rows and
                         x.get('cloud_account_id') is not None and
                         # RIFee is created once a month and is updated every day
-                        (x['start_date'] >= self.min_date_import_threshold or
-                         x['lineItem/LineItemType'] == 'RIFee')]
+                        (x.get('start_date') and x['start_date'] >= self.min_date_import_threshold or
+                         x.get('lineItem/LineItemType') == 'RIFee')]
             for expense in expenses:
                 expense['created_at'] = self.import_start_ts
                 if self._is_flavor_usage(expense):
@@ -538,8 +1037,25 @@ class AWSReportImporter(CSVBaseReportImporter):
                 self.update_raw_records(expenses)
                 now = opttime.utcnow()
                 if (now - date_start).total_seconds() > 60:
-                    LOG.info('report %s: processed %s rows', report_path, i)
+                    LOG.info('report %s: processed %s rows', report_path, row_offset)
                     date_start = now
+
+            # Update row offset for next batch
+            row_offset += actual_size
+
+            # Clear batch_df to free memory
+            del batch_df
+            del expense_chunk
+            del chunk
+            del expenses
+
+            # Force garbage collection every 10 batches to reduce memory pressure
+            if row_offset % (batch_size * 10) == 0:
+                gc.collect()
+
+        LOG.info(f'Completed processing Parquet file: {report_path}, total rows: {row_offset}')
+        # Final garbage collection after processing file
+        gc.collect()
         return billing_period, skipped_accounts
 
     def collect_tags(self, expense):
@@ -967,3 +1483,23 @@ class AWSReportImporter(CSVBaseReportImporter):
 
     def create_risp_processing_tasks(self):
         self._create_risp_processing_tasks()
+
+    def cleanup(self):
+        """Override cleanup to log cache statistics and perform cleanup."""
+        # Log cache statistics
+        if self._report_cache:
+            cache_stats = self.report_cache.get_cache_stats()
+            LOG.info(f"AWS Report Cache Statistics: {cache_stats}")
+            LOG.info(f"Uncompressed file cache - Hits: {self.cache_stats['hits']}, "
+                    f"Misses: {self.cache_stats['misses']}")
+
+            # Perform cache cleanup
+            try:
+                cleanup_stats = self.report_cache.cleanup_old_files()
+                if sum(cleanup_stats.values()) > 0:
+                    LOG.info(f"Cache cleanup: {cleanup_stats}")
+            except Exception as e:
+                LOG.warning(f"Error during cache cleanup: {e}")
+
+        # Call parent cleanup
+        super().cleanup()

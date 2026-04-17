@@ -92,11 +92,12 @@ class DIWorker(ConsumerMixin):
         mongo_params = config_cl.mongo_params()
         # Configure MongoDB client with explicit timeouts and connection pool settings
         # to handle long-running Azure imports and prevent connection refused errors
+        # Increased timeouts for large dataset aggregations (millions of rows)
         return MongoClient(
             mongo_params[0],
             serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
             connectTimeoutMS=20000,          # 20 seconds to establish connection
-            socketTimeoutMS=60000,           # 60 seconds for socket operations (increased for large writes)
+            socketTimeoutMS=600000,          # 10 minutes for socket operations (increased for large aggregations)
             maxPoolSize=50,                  # Maximum connections in pool
             minPoolSize=10,                  # Minimum connections to maintain
             maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
