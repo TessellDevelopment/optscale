@@ -4,7 +4,7 @@ import argparse
 
 import tornado.ioloop
 import tornado.web
-from pymongo import MongoClient
+from optscale_client.mongo_client import get_mongo_client
 from mongoengine import connect
 
 
@@ -89,7 +89,7 @@ def make_app(etcd_host, etcd_port, wait=False, mongo_client_class=None):
     if wait:
         config_cl.wait_configured()
     mongo_conn_string, mobgo_db_name = config_cl.mongo_params()
-    mongo_client = MongoClient(mongo_conn_string)
+    mongo_client = get_mongo_client(mongo_conn_string) if not mongo_client_class else mongo_client_class(mongo_conn_string)
     connection_params = {}
     if mongo_client_class:
         connection_params["mongo_client_class"] = mongo_client_class

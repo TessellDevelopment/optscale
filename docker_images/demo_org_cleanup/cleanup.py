@@ -3,8 +3,8 @@ import os
 from datetime import timedelta, datetime, timezone
 
 from requests import HTTPError
-from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+from optscale_client.mongo_client import get_mongo_client
 
 from optscale_client.config_client.client import Client as ConfigClient
 from optscale_client.rest_api_client.client_v2 import Client as RestClient
@@ -15,9 +15,9 @@ DEFAULT_DEMO_ORG_LIFETIME_HRS = 168
 RESTAPI_DB_NAME = 'restapi'
 
 
-def get_mongo_client(config_cl):
+def get_mongo_db(config_cl):
     url, _ = config_cl.mongo_params()
-    client = MongoClient(url)
+    client = get_mongo_client(url)
     return client[RESTAPI_DB_NAME]
 
 
@@ -36,7 +36,7 @@ def main(config_cl):
                  DEFAULT_DEMO_ORG_LIFETIME_HRS, raw_lifetime_hrs)
         lifetime_hrs = DEFAULT_DEMO_ORG_LIFETIME_HRS
 
-    mongo_db = get_mongo_client(config_cl)
+    mongo_db = get_mongo_db(config_cl)
     demo_collection = mongo_db['live_demos']
 
     _, response = rest_cl.organization_list({'is_demo': True})

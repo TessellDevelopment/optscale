@@ -53,7 +53,8 @@ class Configurator(object):
                 config["mongo"]["host"],
                 config["mongo"]["port"],
             )
-        self.mongo_client = MongoClient(mongo_url)
+        from optscale_client.mongo_client import get_mongo_client
+        self.mongo_client = get_mongo_client(mongo_url)
 
         rabbit_config = config["rabbit"]
         credentials = pika.PlainCredentials(

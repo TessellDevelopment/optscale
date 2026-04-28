@@ -72,8 +72,9 @@ class ServiceBase(object):
     @property
     def mongo_client(self):
         if not self._mongo_client:
+            from optscale_client.mongo_client import get_mongo_client
             mongo_params = self.config_cl.mongo_params()
-            self._mongo_client = MongoClient(mongo_params[0])
+            self._mongo_client = get_mongo_client(mongo_params[0])
         return self._mongo_client
 
     def get_options(self):

@@ -9,7 +9,7 @@ import os
 import base64
 from alembic import op
 import sqlalchemy as sa
-from pymongo import MongoClient, UpdateOne
+from pymongo import UpdateOne
 from optscale_client.config_client.client import Client as EtcdClient
 
 
@@ -50,10 +50,10 @@ def get_etcd_config_client():
 
 
 def get_mongo_client():
+    from optscale_client.mongo_client import get_mongo_client as get_configured_client
     config_cl = get_etcd_config_client()
     mongo_params = config_cl.mongo_params()
-    mongo_client = MongoClient(mongo_params[0])
-    return mongo_client
+    return get_configured_client(mongo_params[0])
 
 
 def get_resources_collection():

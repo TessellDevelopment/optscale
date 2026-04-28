@@ -13,7 +13,6 @@ from alembic import op
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 from optscale_client.config_client.client import Client as EtcdClient
-from pymongo import MongoClient
 from sqlalchemy import Integer, select, String, and_
 import clickhouse_connect
 
@@ -38,9 +37,10 @@ def _get_etcd_config_client():
 
 
 def get_mongo_client():
+    from optscale_client.mongo_client import get_mongo_client as get_configured_client
     config_cl = _get_etcd_config_client()
     mongo_params = config_cl.mongo_params()
-    return MongoClient(mongo_params[0])
+    return get_configured_client(mongo_params[0])
 
 
 def _get_clickhouse_client():

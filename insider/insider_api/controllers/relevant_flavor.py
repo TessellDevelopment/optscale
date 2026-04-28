@@ -6,7 +6,6 @@ import etcd
 from botocore.exceptions import ClientError as AwsClientError
 from collections import defaultdict
 from grpc._channel import _InactiveRpcError
-from pymongo import MongoClient
 from tools.optscale_exceptions.common_exc import (
     NotFoundException, WrongArgumentsException)
 from tools.cloud_adapter.clouds.alibaba import Alibaba
@@ -38,8 +37,9 @@ class BaseProvider:
     @property
     def mongo_client(self):
         if not self._mongo_client:
+            from optscale_client.mongo_client import get_mongo_client
             mongo_params = self._config_cl.mongo_params()
-            self._mongo_client = MongoClient(mongo_params[0])
+            self._mongo_client = get_mongo_client(mongo_params[0])
         return self._mongo_client
 
     @property
