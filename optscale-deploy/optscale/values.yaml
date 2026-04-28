@@ -166,6 +166,25 @@ phpmyadmin:
     externalPort: 30080
     internalPort: 80
 
+tempo:
+  enabled: true
+  name: &tempo_name tempo
+  replicaCount: 1
+  image:
+    id:
+    repository: grafana/tempo
+    tag: "2.10.0"
+    pullPolicy: IfNotPresent
+  service:
+    name: *tempo_name
+    type: ClusterIP
+    externalQueryPort: 3200
+    internalQueryPort: 3200
+    externalGrpcPort: 4317
+    internalGrpcPort: 4317
+    externalHttpPort: 4318
+    internalHttpPort: 4318
+
 herald:
   name: &herald_name herald
   api:
@@ -714,6 +733,15 @@ gemini_worker:
     tag: *tag
     pullPolicy: Always
 
+gemini_data_worker:
+  name: gemini-data-worker
+  replicaCount: 1
+  image:
+    id:
+    repository: gemini_data_worker
+    tag: *tag
+    pullPolicy: Never
+
 bi_scheduler:
   name: bi-scheduler
   image:
@@ -1130,3 +1158,10 @@ stripe:
   enabled: false
   api_key:
   webhook_secret:
+
+#open telemetry settings
+opentelemetry:
+  enabled: true
+  exporter: 
+    type: otlp
+    connection_string: http://tempo.default.svc.cluster.local:4317

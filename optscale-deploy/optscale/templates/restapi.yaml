@@ -65,6 +65,9 @@ spec:
 {{- if .Values.stripe.enabled }}
 {{ include "wait_for_service" .Values.subspector | indent 6 }}
 {{- end }}
+{{- if .Values.tempo.enabled }}
+{{ include "wait_for_tempo_service" .Values.tempo | indent 6 }}
+{{- end }}
       containers:
       - name: {{ $config.name }}
         image: "{{ .Values.docker_registry }}/{{ $config.image.repository }}:{{ if .Values.docker_tag }}{{ .Values.docker_tag }}{{ else }}{{ $config.image.tag }}{{ end }}"
@@ -82,4 +85,8 @@ spec:
           value: /etc/ssl/certs/ca-certificates.crt
         - name: FAKE_CAD_ENABLED
           value: {{ .Values.fake_cad_enabled | quote }}
+        - name: OTEL_SERVICE_NAME
+          value: {{ $config.name }}
+        - name: OTEL_SERVICE_VERSION
+          value: {{ $config.image.tag }}
 {{ include "ready_probe" $config | indent 8 }}
