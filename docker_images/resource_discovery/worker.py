@@ -132,6 +132,7 @@ class ResourcesSaver:
                                                resource_type).value
         obj['last_seen'] = utcnow_timestamp()
         obj['active'] = True
+        obj['meta'] = resource.meta
         cloud_acc_id = obj.pop('cloud_account_id')
         return obj, cloud_acc_id
 

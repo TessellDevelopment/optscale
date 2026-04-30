@@ -1,5 +1,5 @@
 ---
-mysql -u root -p my-password-01 my-db
+ mysql -u root -pmy-password-01 my-db
 ---
 rabbitmqadmin list queues name messages messages_ready messages_unacknowledged
 rabbitmqadmin purge queue name=report-import

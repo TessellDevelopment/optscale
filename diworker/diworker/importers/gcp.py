@@ -197,14 +197,6 @@ class GcpReportImporter(BaseReportImporter):
             r_name = f'{sku} {r_type}'
         return r_type, r_name
 
-    def _get_cloud_extras(self, info):
-        res = defaultdict(dict)
-        for k in ['cpu_count', 'flavor']:
-            val = info.get(k)
-            if val:
-                res['meta'][k] = val
-        return res
-
     def get_resource_info_from_expenses(self, expenses):
         expense = expenses[-1]
         if expense.get('service') == 'Compute Engine':
@@ -238,10 +230,8 @@ class GcpReportImporter(BaseReportImporter):
             'first_seen': int(first_seen.timestamp()),
             'last_seen': int(last_seen.timestamp())
         }
-        if FLAVOR_SYSTEM_TAG in system_tags:
-            info['flavor'] = system_tags[FLAVOR_SYSTEM_TAG]
-        if CORES_SYSTEM_TAG in system_tags:
-            info['cpu_count'] = system_tags[CORES_SYSTEM_TAG]
+        # Note: flavor and cpu_count from system_tags are intentionally not included
+        # to avoid validation errors in the REST API
         LOG.debug('Detected resource info: %s', info)
         return info
 

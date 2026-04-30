@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ./build.sh [component] [--tag tag] [--push] [-r registry] [-u username] [-p password] [--no-cache] [--use-nerdctl]
+# ./build.sh [component1] [component2] [...] [--tag tag] [--push] [-r registry] [-u username] [-p password] [--no-cache] [--use-nerdctl]
+# Multiple components can be specified and will be built in parallel
 # leave registry empty if default registry [docker.io] used
 
 set -e
@@ -9,7 +10,7 @@ COMPANY="hystax"
 REGISTRY=""
 LOGIN=""
 PASSWORD=""
-COMPONENT=""
+COMPONENTS_LIST=()
 INPUT_TAG=""
 FLAGS=""
 NO_CACHE=false
@@ -28,10 +29,8 @@ while [[ "$#" -gt 0 ]]; do
         --no-cache) NO_CACHE=true ;;
         --use-nerdctl) USE_NERDCTL=true ;;
         *)
-            # Set COMPONENT if not already set
-            if [[ -z "$COMPONENT" ]]; then
-                COMPONENT="$1"
-            fi
+            # Collect all non-flag arguments as components
+            COMPONENTS_LIST+=("$1")
             ;;
     esac
     shift
@@ -49,7 +48,13 @@ fi
 
 BUILD_TAG=${INPUT_TAG:-'local'}
 FIND_CMD="find . -mindepth 2 -maxdepth 3 -print | grep Dockerfile | grep -vE '(test|.j2)'"
-FIND_CMD="${FIND_CMD} | grep $COMPONENT/"
+
+# Build grep pattern for multiple components
+if [[ ${#COMPONENTS_LIST[@]} -gt 0 ]]; then
+    COMPONENT_PATTERN=$(printf "|%s" "${COMPONENTS_LIST[@]}")
+    COMPONENT_PATTERN=${COMPONENT_PATTERN:1}  # Remove leading |
+    FIND_CMD="${FIND_CMD} | grep -E '(${COMPONENT_PATTERN})/'"
+fi
 
 # Login to registry if push is enabled
 if [[ "$PUSH" == true ]]; then

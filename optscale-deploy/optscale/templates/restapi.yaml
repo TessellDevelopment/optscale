@@ -54,6 +54,7 @@ spec:
     spec:
       imagePullSecrets:
       - name: dockerhub-creds
+{{ include "anti-affinity" $config | indent 6 }}
       initContainers:
 {{- if .Values.elk.enabled }}
 {{ include "wait_for_elk" . | indent 6 }}
@@ -61,7 +62,6 @@ spec:
 {{ include "wait_for_service" .Values.etcd | indent 6 }}
 {{ include "wait_mariadb" . | indent 6 }}
 {{ include "wait_for_service" .Values.rabbitmq | indent 6 }}
-{{ include "anti-affinity" $config | indent 6 }}
 {{- if .Values.stripe.enabled }}
 {{ include "wait_for_service" .Values.subspector | indent 6 }}
 {{- end }}

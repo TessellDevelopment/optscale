@@ -103,7 +103,7 @@ spec:
 {{- end }}
       - name: copy-config
         image: "busybox:1.30.0"
-        imagePullPolicy: "IfNotPresent"
+        imagePullPolicy: "Always"
         command:
           - "sh"
         args:

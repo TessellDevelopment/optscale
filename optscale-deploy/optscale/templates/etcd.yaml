@@ -212,6 +212,7 @@ spec:
       containers:
       - name: configurator
         image: "{{ .Values.docker_registry }}/configurator:{{ if .Values.docker_tag }}{{ .Values.docker_tag }}{{ else }}local{{ end }}"
+        imagePullPolicy: Always
         volumeMounts:
         - name: config-volume
           mountPath: /config

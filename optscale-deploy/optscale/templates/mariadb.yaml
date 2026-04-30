@@ -94,7 +94,7 @@ spec:
 {{- end }}
       - name: copy-mariadb-config
         image: "busybox:1.30.0"
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         command: ['sh', '-c', 'cp /configmap/* /etc/mysql/conf.d']
         volumeMounts:
         - name: configmap

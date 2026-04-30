@@ -174,7 +174,7 @@ tempo:
     id:
     repository: grafana/tempo
     tag: "2.10.0"
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *tempo_name
     type: ClusterIP
@@ -740,7 +740,7 @@ gemini_data_worker:
     id:
     repository: gemini_data_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 bi_scheduler:
   name: bi-scheduler

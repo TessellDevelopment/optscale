@@ -5,6 +5,7 @@ WORKDIR /usr/src/app/
 ENV PYTHONPATH /usr/src/app/
 
 COPY optscale_client/config_client optscale_client/config_client
+COPY optscale_client/mongo_client optscale_client/mongo_client
 
 COPY docker_images/configurator/requirements.txt docker_images/configurator/
 RUN pip install --no-cache-dir -r docker_images/configurator/requirements.txt
