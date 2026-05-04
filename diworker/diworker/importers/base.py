@@ -594,17 +594,119 @@ class BaseReportImporter:
             cl_acc_dates['last_start_date'] = start_date
 
     def clear_rudiments(self):
+        """
+        Clear old raw expense records that don't match the current report_identity.
+        Uses batched deletion to avoid MongoDB timeout on large datasets and reduce
+        storage pressure during deletion.
+
+        IMPORTANT: This operation deletes potentially millions of records in batches
+        to prevent:
+        1. MongoDB socket timeout (10 min limit)
+        2. Storage I/O contention when disk is near capacity
+        3. Memory pressure from large delete operations
+        """
+        BATCH_SIZE = 5000  # Smaller batches for better performance on stressed systems
+
         for cloud_account_id, dates in self.imported_raw_dates_map.items():
-            result = self.mongo_raw.delete_many({
+            delete_filter = {
                 'cloud_account_id': cloud_account_id,
                 'start_date': {
                     '$gte': dates.get('start_date'),
                     '$lte': dates.get('last_start_date')
                 },
                 'report_identity': {'$ne': self.report_identity}
-            })
-            LOG.info('Cleared %s rudiments for cloud_account %s' %
-                     (result.deleted_count, cloud_account_id))
+            }
+
+            # First, estimate how many documents we need to delete (with timeout protection)
+            # Use estimatedDocumentCount for speed if count times out
+            try:
+                total_to_delete = self.mongo_raw.count_documents(
+                    delete_filter, maxTimeMS=30000)  # 30 second timeout for count
+                if total_to_delete == 0:
+                    LOG.info('No rudiments to clear for cloud_account %s' % cloud_account_id)
+                    continue
+
+                LOG.info('Clearing %s rudiments for cloud_account %s in batches of %s' %
+                         (total_to_delete, cloud_account_id, BATCH_SIZE))
+
+                # Warn if large deletion is about to occur
+                if total_to_delete > 100000:
+                    LOG.warning('Large deletion operation: %s records. This may take time '
+                               'and could indicate storage pressure.' % total_to_delete)
+            except Exception as e:
+                LOG.warning('Could not count rudiments for cloud_account %s: %s. '
+                           'Proceeding with batched deletion anyway.' % (cloud_account_id, e))
+                total_to_delete = None
+
+            # Delete in batches to avoid timeout and reduce I/O pressure
+            total_deleted = 0
+            batch_num = 0
+            overall_start = time.time()
+
+            while True:
+                batch_num += 1
+                batch_start = time.time()
+
+                try:
+                    # Find IDs of documents to delete in this batch
+                    # Using find() with limit is more efficient than delete_many without limit
+                    # Project only _id to minimize network transfer and memory usage
+                    cursor = self.mongo_raw.find(
+                        delete_filter,
+                        {'_id': 1}
+                    ).limit(BATCH_SIZE)
+
+                    # Collect IDs
+                    ids_to_delete = [doc['_id'] for doc in cursor]
+
+                    if not ids_to_delete:
+                        # No more documents to delete
+                        break
+
+                    # Delete by IDs (fastest approach using primary index)
+                    result = self.mongo_raw.delete_many({'_id': {'$in': ids_to_delete}})
+                    deleted_count = result.deleted_count
+                    total_deleted += deleted_count
+
+                    batch_duration = time.time() - batch_start
+
+                    # Calculate throughput
+                    docs_per_sec = deleted_count / batch_duration if batch_duration > 0 else 0
+
+                    progress_msg = 'Batch %s: Deleted %s rudiments in %.2fs (%.0f docs/sec)' % (
+                        batch_num, deleted_count, batch_duration, docs_per_sec)
+                    if total_to_delete:
+                        progress_msg += ' - Progress: %s/%s (%.1f%%)' % (
+                            total_deleted, total_to_delete,
+                            (total_deleted / total_to_delete) * 100)
+                    else:
+                        progress_msg += ' - Total: %s' % total_deleted
+                    LOG.info(progress_msg)
+
+                    # If we deleted fewer than BATCH_SIZE, we're done
+                    if deleted_count < BATCH_SIZE:
+                        break
+
+                    # Add a small delay every 10 batches to reduce I/O pressure on stressed systems
+                    # This helps when MongoDB disk is near capacity (>80%)
+                    if batch_num % 10 == 0:
+                        time.sleep(0.1)  # 100ms pause to let I/O subsystem breathe
+
+                except Exception as e:
+                    LOG.error('Error deleting rudiments batch %s for cloud_account %s: %s' %
+                             (batch_num, cloud_account_id, e))
+                    # If we've already deleted some, consider it a partial success
+                    if total_deleted > 0:
+                        LOG.warning('Cleared %s rudiments before error occurred' % total_deleted)
+                    raise
+
+            overall_duration = time.time() - overall_start
+            avg_throughput = total_deleted / overall_duration if overall_duration > 0 else 0
+
+            LOG.info('Successfully cleared %s total rudiments for cloud_account %s in %.2fs '
+                     '(avg: %.0f docs/sec, %s batches)' %
+                     (total_deleted, cloud_account_id, overall_duration,
+                      avg_throughput, batch_num))
 
 
 class CSVBaseReportImporter(BaseReportImporter):
