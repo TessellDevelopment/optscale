@@ -9,6 +9,10 @@ LOG = logging.getLogger(__name__)
 WRITE_CHUNK_SIZE = 200
 READ_CHUNK_SIZE = 20
 CORES_SYSTEM_TAG = 'compute.googleapis.com/cores'
+# Special hardcoded cloud_account_id for ALL unattached GCP costs
+# This ensures all unattached costs across all GCP datasources point to same virtual datasource
+GCP_UNATTACHED_CLOUD_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000'
+GCP_UNATTACHED_RESOURCE_PREFIX = 'GCP-UNATTACHED'
 FLAVOR_SYSTEM_TAG = 'compute.googleapis.com/machine_spec'
 OPTSCALE_RESOURCE_ID_TAG = 'optscale_tracking_id'
 
@@ -98,10 +102,29 @@ class GcpReportImporter(BaseReportImporter):
         self._process_row_cost(row_dict)
         row_dict['region'] = self._get_resource_region(
             row_dict.pop('location', None))
-        row_dict['cloud_account_id'] = self.cloud_acc_id
+
+        # Handle unattached costs (where project.id IS NULL in billing export)
+        # These are billing-account-level costs like credits, support, taxes
+        # All unattached costs use a HARDCODED cloud_account_id so they appear under
+        # a single virtual "GCP-UNATTACHED" datasource, preventing duplication
+        project_id = row_dict.pop('project_id', None)
+        if project_id is None:
+            # Override cloud_account_id to hardcoded value for ALL unattached costs
+            row_dict['cloud_account_id'] = GCP_UNATTACHED_CLOUD_ACCOUNT_ID
+            # Also set cloud_resource_id for UI filtering
+            row_dict['cloud_resource_id'] = GCP_UNATTACHED_RESOURCE_PREFIX
+            LOG.debug("Processing unattached cost: service=%s, sku=%s, cost=%s, "
+                     "assigned to virtual cloud_account_id=%s",
+                     row_dict.get('service'), row_dict.get('sku'),
+                     row_dict.get('cost'), GCP_UNATTACHED_CLOUD_ACCOUNT_ID)
+        else:
+            # Regular project costs use the actual datasource cloud_account_id
+            row_dict['cloud_account_id'] = self.cloud_acc_id
+
         row_dict['tags'] = self._convert_tags_list_to_dict(row_dict['tags'])
         row_dict['system_tags'] = self._convert_tags_list_to_dict(
             row_dict['system_tags'])
+
         resource_hash = row_dict['tags'].get(OPTSCALE_RESOURCE_ID_TAG)
         # Check that hash is sha1. This is only needed for our hystaxcom account
         # where we experimented with our resource tagging strategies
@@ -230,63 +253,96 @@ class GcpReportImporter(BaseReportImporter):
             'first_seen': int(first_seen.timestamp()),
             'last_seen': int(last_seen.timestamp())
         }
+
+        # For unattached costs, include the special cloud_resource_id
+        # so they appear as a separate "project" in the UI
+        # Mark them as active=false since they're billing-only (not discovered resources)
+        cloud_resource_id = expense.get('cloud_resource_id')
+        if cloud_resource_id == GCP_UNATTACHED_RESOURCE_PREFIX:
+            info['cloud_resource_id'] = GCP_UNATTACHED_RESOURCE_PREFIX
+            info['active'] = False  # Unattached costs are billing-only, not discovered resources
+            LOG.debug('Unattached cost resource: %s', info['name'])
+
         # Note: flavor and cpu_count from system_tags are intentionally not included
         # to avoid validation errors in the REST API
         LOG.debug('Detected resource info: %s', info)
         return info
 
     def generate_clean_records(self, regeneration=False):
-        def save_expenses(resources_unique_ids, unique_id_field):
-            resource_count = len(resources_unique_ids)
-            progress = 0
-            for i in range(0, resource_count, READ_CHUNK_SIZE):
-                new_progress = round(i / resource_count * 100)
-                if new_progress != progress:
-                    progress = new_progress
-                    LOG.info('Progress: %s', progress)
+        def process_account(cloud_acc_id):
+            """Process clean records for a specific cloud account ID."""
+            def save_expenses(resources_unique_ids, unique_id_field):
+                resource_count = len(resources_unique_ids)
+                progress = 0
+                for i in range(0, resource_count, READ_CHUNK_SIZE):
+                    new_progress = round(i / resource_count * 100)
+                    if new_progress != progress:
+                        progress = new_progress
+                        LOG.info('Progress: %s', progress)
 
-                filters = base_filters + [{unique_id_field: {
-                    '$in': resources_unique_ids[i:i + READ_CHUNK_SIZE]
-                }}]
-                expenses = self.mongo_raw.aggregate([
-                    {'$match': {
-                        '$and': filters,
-                    }},
-                ], allowDiskUse=True)
-                chunk = defaultdict(list)
-                for e in expenses:
-                    chunk[e[unique_id_field]].append(e)
-                self.save_clean_expenses(self.cloud_acc_id, chunk,
-                                         unique_id_field=unique_id_field)
+                    filters = base_filters + [{unique_id_field: {
+                        '$in': resources_unique_ids[i:i + READ_CHUNK_SIZE]
+                    }}]
+                    expenses = self.mongo_raw.aggregate([
+                        {'$match': {
+                            '$and': filters,
+                        }},
+                    ], allowDiskUse=True)
+                    chunk = defaultdict(list)
+                    for e in expenses:
+                        chunk[e[unique_id_field]].append(e)
+                    self.save_clean_expenses(cloud_acc_id, chunk,
+                                             unique_id_field=unique_id_field)
 
-        base_filters = [{'cloud_account_id': self.cloud_acc_id}]
+            base_filters = [{'cloud_account_id': cloud_acc_id}]
+            if self.period_start:
+                base_filters.append({'start_date': {'$gte': self.period_start}})
+
+            distinct_filters = {}
+            for f in base_filters:
+                distinct_filters.update(f)
+
+            r_id_filters = distinct_filters.copy()
+            r_id_filters['resource_id'] = {'$exists': True, '$ne': None}
+            resource_ids = list(x['_id'] for x in self.mongo_raw.aggregate([
+                {'$match': r_id_filters},
+                {'$group': {'_id': '$resource_id'}}
+            ]))
+
+            r_hash_filters = distinct_filters.copy()
+            r_hash_filters['$or'] = [{'resource_id': {'$exists': False}},
+                                     {'resource_id': {'$eq': None}}]
+            r_hash_filters['resource_hash'] = {'$exists': True}
+            resource_hashes = list(x['_id'] for x in self.mongo_raw.aggregate([
+                {'$match': r_hash_filters},
+                {'$group': {'_id': '$resource_hash'}}
+            ]))
+
+            LOG.info('Resources with ids count: %s', len(resource_ids))
+            save_expenses(resource_ids, 'resource_id')
+            LOG.info('Resources without ids count: %s', len(resource_hashes))
+            save_expenses(resource_hashes, 'resource_hash')
+
+        # First, process the regular GCP account's expenses
+        LOG.info('Processing clean records for regular GCP account: %s', self.cloud_acc_id)
+        process_account(self.cloud_acc_id)
+
+        # Second, process the virtual unattached account's expenses
+        # Check if any unattached costs exist for this import
         if self.period_start:
-            base_filters.append({'start_date': {'$gte': self.period_start}})
+            unattached_count = self.mongo_raw.count_documents({
+                'cloud_account_id': GCP_UNATTACHED_CLOUD_ACCOUNT_ID,
+                'start_date': {'$gte': self.period_start}
+            })
+        else:
+            unattached_count = self.mongo_raw.count_documents({
+                'cloud_account_id': GCP_UNATTACHED_CLOUD_ACCOUNT_ID
+            })
 
-        distinct_filters = {}
-        for f in base_filters:
-            distinct_filters.update(f)
-
-        r_id_filters = distinct_filters.copy()
-        r_id_filters['resource_id'] = {'$exists': True, '$ne': None}
-        resource_ids = list(x['_id'] for x in self.mongo_raw.aggregate([
-            {'$match': r_id_filters},
-            {'$group': {'_id': '$resource_id'}}
-        ]))
-
-        r_hash_filters = distinct_filters.copy()
-        r_hash_filters['$or'] = [{'resource_id': {'$exists': False}},
-                                 {'resource_id': {'$eq': None}}]
-        r_hash_filters['resource_hash'] = {'$exists': True}
-        resource_hashes = list(x['_id'] for x in self.mongo_raw.aggregate([
-            {'$match': r_hash_filters},
-            {'$group': {'_id': '$resource_hash'}}
-        ]))
-
-        LOG.info('Resources with ids count: %s', len(resource_ids))
-        save_expenses(resource_ids, 'resource_id')
-        LOG.info('Resources without ids count: %s', len(resource_hashes))
-        save_expenses(resource_hashes, 'resource_hash')
+        if unattached_count > 0:
+            LOG.info('Processing clean records for virtual unattached account: %s (%d raw expenses)',
+                     GCP_UNATTACHED_CLOUD_ACCOUNT_ID, unattached_count)
+            process_account(GCP_UNATTACHED_CLOUD_ACCOUNT_ID)
 
     def create_traffic_processing_tasks(self):
         self._create_traffic_processing_tasks()

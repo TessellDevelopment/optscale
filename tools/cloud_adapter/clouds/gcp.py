@@ -156,6 +156,7 @@ BASE_CONSOLE_LINK = "https://console.cloud.google.com"
 DEFAULT_CURRENCY = "USD"
 OPTSCALE_TRACKING_TAG = "optscale_tracking_id"
 STANDARD_BILLING_PREFIX = "gcp_billing_export_v1"
+UNATTACHED_PROJECT_ID = "GCP-UNATTACHED"
 
 COMPUTE_SERVICE_ID = "6F81-5844-456A"
 
@@ -796,6 +797,11 @@ class Gcp(CloudBase):
         return region
 
     def discovery_calls_map(self):
+        # Disable resource discovery for unattached costs datasource
+        # since there's no actual project to discover resources from
+        if self.is_unattached_project:
+            return {}
+
         return {
             tools.cloud_adapter.model.VolumeResource: self.volume_discovery_calls,
             tools.cloud_adapter.model.InstanceResource: self.instance_discovery_calls,
@@ -836,6 +842,21 @@ class Gcp(CloudBase):
     @property
     def billing_project_id(self) -> str:
         return self.billing_data.get("project_id", self.project_id)
+
+    @property
+    def billing_account_id(self) -> str:
+        """Extract billing account ID from the table name.
+        Table name format: gcp_billing_export_v1_BILLING_ACCOUNT_ID
+        """
+        table_name = self.billing_table
+        if table_name.startswith(STANDARD_BILLING_PREFIX + "_"):
+            return table_name[len(STANDARD_BILLING_PREFIX) + 1:]
+        return None
+
+    @property
+    def is_unattached_project(self) -> bool:
+        """Check if this datasource is configured to import unattached costs."""
+        return self.project_id == UNATTACHED_PROJECT_ID
 
     @property
     def pricing_data(self):
@@ -1002,6 +1023,9 @@ class Gcp(CloudBase):
             raise tools.cloud_adapter.exceptions.InvalidParameterException(
                 "project_id should be set either in data source config or in cloud credentials."
             )
+        # Allow UNATTACHED as a special project_id for unattached costs
+        if self.is_unattached_project:
+            LOG.info("Datasource configured for unattached costs (project_id=%s)", UNATTACHED_PROJECT_ID)
 
     def _validate_cloud_connection(self):
         try:
@@ -1016,7 +1040,10 @@ class Gcp(CloudBase):
             self._validate_project_id()
             self._validate_billing_config()
             self._validate_billing_type()
-            self._validate_cloud_connection()
+            # Skip cloud connection validation for unattached datasource
+            # since there's no actual project to validate against
+            if not self.is_unattached_project:
+                self._validate_cloud_connection()
             self._test_bigquery_connection()
         except api_exceptions.Forbidden as ex:
             # remove new-lines, otherwise tornado will fail to write response
@@ -1025,10 +1052,23 @@ class Gcp(CloudBase):
             )
         except Exception as ex:
             raise tools.cloud_adapter.exceptions.CloudConnectionError(str(ex))
-        return {"account_id": self.project_id, "warnings": []}
+
+        # Return appropriate account_id
+        account_id = self.project_id
+        if self.is_unattached_project and self.billing_account_id:
+            # For unattached costs, use billing account ID in the response
+            account_id = f"{UNATTACHED_PROJECT_ID}-{self.billing_account_id}"
+
+        return {"account_id": account_id, "warnings": []}
 
     def get_usage(self, start_date, end_date):
         table_name = self._billing_table_full_name()
+
+        # Import both project-specific costs AND unattached costs (project.id IS NULL)
+        # Unattached costs will be mapped to a dummy project_id "GCP-UNATTACHED" by the importer
+        project_filter = f'(project.id = "{self.project_id}" OR project.id IS NULL)'
+        LOG.debug("Querying costs for project: %s (including unattached costs)", self.project_id)
+
         query = f"""
         SELECT
             service.description as service,
@@ -1044,11 +1084,12 @@ class Gcp(CloudBase):
             usage.amount_in_pricing_units as usage_amount_in_pricing_units,
             usage.pricing_unit as usage_pricing_unit,
             system_labels as system_tags,
-            credits, adjustment_info
+            credits, adjustment_info,
+            project.id as project_id
         FROM `{table_name}`
         WHERE
             TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) = TIMESTAMP("{start_date}") AND
-            project.id = "{self.project_id}"
+            {project_filter}
         """
         return self.bigquery_client.query(
             query,
@@ -1057,6 +1098,10 @@ class Gcp(CloudBase):
 
     @cached_property
     def regions(self):
+        # Unattached datasources don't have a real project, so no regions to list
+        if self.is_unattached_project:
+            return []
+
         return [
             region.name
             for region in self.compute_regions_client.list(
