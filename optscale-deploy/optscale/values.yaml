@@ -174,7 +174,7 @@ tempo:
     id:
     repository: grafana/tempo
     tag: "2.10.0"
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   service:
     name: *tempo_name
     type: ClusterIP
@@ -347,7 +347,7 @@ report_import_scheduler:
   image:
     repository: curlimages/curl
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   startingDeadlineSeconds: 100
 
 resource_discovery:
