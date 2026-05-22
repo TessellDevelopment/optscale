@@ -252,7 +252,7 @@ class DiscoveryWorker(ConsumerMixin):
 
     def get_consumers(self, Consumer, channel):
         return [Consumer(queues=[task_queue], accept=['json'],
-                         callbacks=[self.process_task], prefetch_count=1)]
+                         callbacks=[self.process_task], prefetch_count=5)]
 
     def get_config(self, cloud_account_id):
         _, cloud_account = self.rest_cl.cloud_account_get(cloud_account_id)

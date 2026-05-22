@@ -352,7 +352,7 @@ report_import_scheduler:
 
 resource_discovery:
   name: resource-discovery
-  replicaCount: 1 # amount of workers
+  replicaCount: 10 # amount of workers
   image:
     repository: resource_discovery
     tag: *tag
@@ -1107,7 +1107,7 @@ bumi_scheduler_timeout: 300
 bumi_worker:
   max_retries: 5
   wait_timeout: 7200
-  task_timeout: 3600
+  task_timeout: 7200  # Increased from 3600 (1 hour) to 7200 (2 hours) to handle long-running recommendation tasks
   run_period: 10800
 
 fake_cad_enabled: 0
