@@ -537,8 +537,28 @@ class AWSReportImporter(CSVBaseReportImporter):
         report_files = []
         for r in self.report_files.values():
             report_files.extend(r)
+
+        # Track skipped files for reporting
+        skipped_files = []
+        successful_files = []
+
         for report_path in report_files:
-            self.load_report(report_path, account_id_ca_id_map)
+            try:
+                self.load_report(report_path, account_id_ca_id_map)
+                successful_files.append(report_path)
+            except Exception as e:
+                # Log error but continue processing other files
+                LOG.error(f"Failed to load report {report_path}: {e}", exc_info=True)
+                skipped_files.append((report_path, str(e)))
+
+        # Log summary
+        if skipped_files:
+            LOG.warning(f"Skipped {len(skipped_files)} report file(s) out of {len(report_files)} total")
+            for path, error in skipped_files:
+                LOG.warning(f"  - {path}: {error}")
+
+        LOG.info(f"Successfully processed {len(successful_files)} report file(s)")
+
         self.clear_rudiments()
 
     def _log_memory_usage(self, context=""):
@@ -567,9 +587,52 @@ class AWSReportImporter(CSVBaseReportImporter):
         except Exception as e:
             LOG.debug(f"Error logging memory: {e}")
 
+    def _validate_report_file(self, report_path):
+        """
+        Validate report file before processing.
+        Returns True if file is valid, False if it should be skipped.
+        """
+        # Check if file exists
+        if not os.path.exists(report_path):
+            LOG.warning(f"Report file does not exist: {report_path}")
+            return False
+
+        # Check file size - skip empty files
+        file_size = os.path.getsize(report_path)
+        if file_size == 0:
+            LOG.warning(f"Skipping empty report file (0 bytes): {report_path}")
+            return False
+
+        # For CSV files, do a quick validation of content
+        if report_path.endswith('.csv'):
+            try:
+                with open(report_path, 'r') as f:
+                    # Read first few bytes to check if file has content
+                    first_bytes = f.read(10)
+                    if not first_bytes or first_bytes.isspace():
+                        LOG.warning(f"Skipping CSV file with no content: {report_path}")
+                        return False
+
+                    # Try to read header line
+                    f.seek(0)
+                    header = f.readline()
+                    if not header or not header.strip():
+                        LOG.warning(f"Skipping CSV file with no header: {report_path}")
+                        return False
+            except Exception as e:
+                LOG.warning(f"Failed to validate CSV file {report_path}: {e}")
+                return False
+
+        return True
+
     def load_report(self, report_path, account_id_ca_id_map):
         skipped_accounts = set()
         billing_period = None
+
+        # Validate file before any processing
+        if not self._validate_report_file(report_path):
+            LOG.info(f"Skipped invalid report file: {report_path}")
+            return billing_period, skipped_accounts
 
         # Get file size for metrics
         file_size_mb = os.path.getsize(report_path) / (1024 * 1024)
@@ -765,6 +828,10 @@ class AWSReportImporter(CSVBaseReportImporter):
         return obj
 
     def _convert_to_legacy_csv_columns(self, columns, dict_format=False):
+        # Defense-in-depth: handle None columns (should not happen after validation)
+        if columns is None:
+            LOG.error("Attempted to convert None columns - file validation should have caught this")
+            return [] if not dict_format else {}
         if not dict_format:
             return [self._get_legacy_csv_key(col) for col in columns]
         return {col: self._get_legacy_csv_key(col) for col in columns}
@@ -823,6 +890,12 @@ class AWSReportImporter(CSVBaseReportImporter):
 
         with csvfile:
             reader = csv.DictReader(csvfile)
+
+            # Handle case where fieldnames is None (empty file, should have been caught by validation)
+            if reader.fieldnames is None:
+                LOG.error(f"CSV reader fieldnames is None for {report_path} - file may be empty or corrupted")
+                return billing_period, skipped_accounts
+
             reader.fieldnames = self._convert_to_legacy_csv_columns(
                 reader.fieldnames)
             chunk = []

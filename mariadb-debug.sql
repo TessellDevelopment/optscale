@@ -25,8 +25,13 @@ SELECT state, COUNT(*) FROM reportimport WHERE deleted_at = 0 GROUP BY state;
 
 -- Disable auto_import for all cloud accounts
 UPDATE cloudaccount 
-SET auto_import = 0
+SET auto_import = 1
 WHERE deleted_at = 0 and type in ('aws_cnr', 'gcp_cnr', 'azure_cnr') ;
+
+-- Disable auto_import for virutal cloud account
+UPDATE cloudaccount 
+SET auto_import = 0
+WHERE deleted_at = 0 and id = '00000000-0000-0000-0000-000000000000' ;
 
 -- Mark stuck imports as failed
 UPDATE reportimport 
