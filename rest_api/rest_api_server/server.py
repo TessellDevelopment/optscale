@@ -86,6 +86,8 @@ def get_handlers(handler_kwargs, version=None):
              h_v2.employees.EmployeeAsyncCollectionHandler, handler_kwargs),
             (urls_v2.employees,
              h_v2.employees.EmployeeAsyncItemHandler, handler_kwargs),
+            (urls_v2.employee_role,
+             h_v2.employees.EmployeeRoleAsyncHandler, handler_kwargs),
             (urls_v2.pools,
              h_v2.pools.PoolAsyncItemHandler, handler_kwargs),
             (urls_v2.cloud_resources_collection,

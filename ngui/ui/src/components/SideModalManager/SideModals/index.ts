@@ -19,6 +19,7 @@ import DeleteAssignmentRuleModal from "./DeleteAssignmentRuleModal";
 import DeleteBIExportModal from "./DeleteBIExportModal";
 import DeleteClusterTypeModal from "./DeleteClusterTypeModal";
 import DeleteEmployeeModal from "./DeleteEmployeeModal";
+import EditEmployeeRoleModal from "./EditEmployeeRoleModal";
 import DeleteEnvironmentBookingModal from "./DeleteEnvironmentBookingModal";
 import DeleteEnvironmentModal from "./DeleteEnvironmentModal";
 import DeleteEnvironmentPropertyModal from "./DeleteEnvironmentPropertyModal";
@@ -76,6 +77,7 @@ export {
   DeleteAssignmentRuleModal,
   CreateOrganizationOptionModal,
   DeleteEmployeeModal,
+  EditEmployeeRoleModal,
   DeleteOrganizationModal,
   DeleteOrganizationOptionModal,
   CiCdIntegrationModal,

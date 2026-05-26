@@ -89,6 +89,96 @@ class AssignmentAsyncItemHandler(AssignmentAsyncItemHandler_v1,
         await self.check_token()
         await super().get(assignment_id, **kwargs)
 
+    async def patch(self, assignment_id, **kwargs):
+        """
+        ---
+        tags: [assignments]
+        summary: Update assignment role
+        description: |
+            Updates an assignment's role with specified id
+            Required permission: ASSIGN_USER, ASSIGN_SELF or CLUSTER_SECRET
+        parameters:
+        -   name: user_id
+            in: path
+            description: User ID
+            required: true
+            type: string
+        -   name: id
+            in: path
+            description: ID of assignment to update
+            required: true
+            type: string
+        -   in: body
+            name: body
+            description: Assignment update parameters
+            required: true
+            schema:
+                type: object
+                properties:
+                    role_id: {type: integer, description: "New role ID"}
+        responses:
+            200:
+                description: Success (returns updated assignment)
+                schema:
+                    type: object
+                    properties:
+                        assignment_id: {type: string}
+                        assignment_resource: {type: string}
+                        assignment_resource_type: {type: integer}
+                        role_scope: {type: string}
+                        role_name: {type: string}
+                        role_id: {type: integer}
+            400:
+                description: |
+                    Wrong arguments:
+                    - OA0031: Argument is required
+                    - OA0049: Argument should be integer
+            401:
+                description: |
+                    Unauthorized:
+                    - OA0010: Token not found
+                    - OA0011: Invalid token
+                    - OA0023: Unauthorized
+                    - OA0062: This resource requires an authorization token
+            403:
+                description: |
+                    Forbidden:
+                    - OA0012: Forbidden!
+                    - OA0017: Role not assignable to user
+            404:
+                description: |
+                    Not found:
+                    - OA0019: Assignment not found
+                    - OA0024: User was not found
+        security:
+        - token: []
+        - secret: []
+        """
+        if not self.check_cluster_secret(raises=False):
+            await self.check_token()
+            kwargs.update(self.token)
+        data = self._request_body()
+        data.update(kwargs)
+        item, _ = await self._get_item(assignment_id)
+        self._validate_params(item, **kwargs)
+        try:
+            updated_item = await self.controller.edit(assignment_id, **data)
+        except NotFoundException as ex:
+            raise OptHTTPError.from_opt_exception(404, ex)
+        except ForbiddenException as ex:
+            raise OptHTTPError.from_opt_exception(403, ex)
+        except WrongArgumentsException as ex:
+            raise OptHTTPError.from_opt_exception(400, ex)
+        # Format the response similar to the list endpoint
+        result = {
+            'assignment_id': updated_item.id,
+            'assignment_resource': updated_item.resource_id,
+            'assignment_resource_type': updated_item.type_id,
+            'role_id': updated_item.role_id,
+            'user_id': updated_item.user_id
+        }
+        self.write(json.dumps(result))
+
     async def delete(self, assignment_id, **kwargs):
         """
         ---

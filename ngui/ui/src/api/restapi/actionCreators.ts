@@ -41,6 +41,7 @@ import {
   GET_AUTHORIZED_EMPLOYEES,
   GET_EMPLOYEES,
   DELETE_EMPLOYEE,
+  UPDATE_EMPLOYEE_ROLE,
   SET_AUTHORIZED_EMPLOYEES,
   SET_EMPLOYEES,
   GET_ORGANIZATION_EXPENSES,
@@ -711,6 +712,33 @@ export const deleteEmployee = (employeeId, { newOwnerId }) =>
     affectedRequests: [GET_EMPLOYEES, GET_AUTHORIZED_EMPLOYEES],
     params: {
       new_owner_id: newOwnerId,
+    },
+  });
+
+export const updateEmployeeRole = (employeeId, params) =>
+  apiAction({
+    url: `${API_URL}/employees/${employeeId}/role`,
+    method: "PATCH",
+    label: UPDATE_EMPLOYEE_ROLE,
+    successHandlerType: SUCCESS_HANDLER_TYPE_ALERT,
+    affectedRequests: [GET_EMPLOYEES, GET_AUTHORIZED_EMPLOYEES],
+    params: {
+      role_purpose: params.rolePurpose,
+      scope_id: params.scopeId,
+      scope_type: params.scopeType,
+    },
+  });
+
+export const deleteEmployeeRole = (employeeId, params) =>
+  apiAction({
+    url: `${API_URL}/employees/${employeeId}/role`,
+    method: "DELETE",
+    label: UPDATE_EMPLOYEE_ROLE,
+    successHandlerType: SUCCESS_HANDLER_TYPE_ALERT,
+    affectedRequests: [GET_EMPLOYEES, GET_AUTHORIZED_EMPLOYEES],
+    params: {
+      scope_id: params.scopeId,
+      scope_type: params.scopeType,
     },
   });
 

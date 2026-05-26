@@ -28,6 +28,7 @@ class UrlsV2(Urls):
         'cloud_account_expenses': r"%s/clouds_expenses/(?P<cloud_account_id>[^/]+)",
         'employees_collection': r"%s/organizations/(?P<organization_id>[^/]+)/employees",
         'employees': r"%s/employees/(?P<id>[^/]+)",
+        'employee_role': r"%s/employees/(?P<id>[^/]+)/role",
         'employees_expenses': r"%s/employees_expenses/(?P<employee_id>[^/]+)",
         'pools': r"%s/pools/(?P<id>[^/]+)",
         'cloud_resources_collection': r"%s/cloud_accounts/(?P<cloud_account_id>[^/]+)/cloud_resources",

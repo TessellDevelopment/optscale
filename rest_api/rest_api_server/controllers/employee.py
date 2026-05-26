@@ -497,6 +497,155 @@ class EmployeeController(BaseController, MongoMixin):
                     authorized_users.append(user_id)
         return authorized_users
 
+    def update_role(self, employee_id, new_role_purpose, scope_id,
+                    scope_type='organization'):
+        """
+        Update an employee's role/permission for a given scope.
+
+        Args:
+            employee_id: The employee ID whose role needs to be updated
+            new_role_purpose: The new role purpose (e.g., 'optscale_manager',
+                            'optscale_engineer', 'optscale_member')
+            scope_id: The scope (organization or pool) ID
+            scope_type: Type of scope ('organization' or 'pool')
+
+        Returns:
+            Updated assignment information
+        """
+        # Validate the employee exists
+        employee = self.get(employee_id)
+        if not employee:
+            raise NotFoundException(Err.OE0002, [Employee.__name__, employee_id])
+
+        # Validate the new role purpose
+        valid_purposes = [p.value for p in RolePurposes]
+        if new_role_purpose not in valid_purposes:
+            raise WrongArgumentsException(Err.OE0217, ['role_purpose'])
+
+        # Get the new role by purpose
+        try:
+            _, new_role = self.auth_client.get_purposed_role(new_role_purpose)
+        except requests.exceptions.HTTPError as ex:
+            LOG.error('Get role error: %s' % str(ex))
+            raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+        # Get current assignments for this user
+        try:
+            _, assignments = self.auth_client.assignment_list(employee.auth_user_id)
+        except requests.exceptions.HTTPError as ex:
+            LOG.error('Assignment list error: %s' % str(ex))
+            raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+        # Find the assignment for this scope
+        assignment_to_update = None
+        for assignment in assignments:
+            if assignment['assignment_resource'] == scope_id:
+                assignment_to_update = assignment
+                break
+
+        # Prevent changing another organization manager's role if editing org-level assignment
+        if scope_type == 'organization' and assignment_to_update:
+            # Check if the target employee is an organization manager
+            is_target_org_manager = self.is_org_manager(assignments, scope_id)
+
+            if is_target_org_manager:
+                # Get current user and check if they're trying to change another manager's role
+                current_user_id = self.get_user_id()
+                if current_user_id != employee.auth_user_id:
+                    raise ForbiddenException(Err.OE0234, [])
+
+        if assignment_to_update:
+            # Check if the role is already the same
+            if assignment_to_update['role_id'] == new_role['id']:
+                # No update needed
+                return assignment_to_update
+
+            # Update existing assignment
+            try:
+                type_id = self._get_type_id(scope_type)
+                code, updated_assignment = self.auth_client.assignment_update(
+                    assignment_to_update['assignment_id'],
+                    employee.auth_user_id,
+                    new_role['id']
+                )
+                if code != 200:
+                    raise WrongArgumentsException(Err.OE0435,
+                        ['Failed to update assignment'])
+            except requests.exceptions.HTTPError as ex:
+                LOG.error('Assignment update error: %s' % str(ex))
+                raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+            return updated_assignment
+        else:
+            # Create new assignment for this scope (e.g., new pool role)
+            try:
+                type_id = self._get_type_id(scope_type)
+                code, new_assignment = self.auth_client.assignment_register(
+                    employee.auth_user_id,
+                    new_role['id'],
+                    type_id,
+                    scope_id
+                )
+                if code != 201:
+                    raise WrongArgumentsException(Err.OE0435,
+                        ['Failed to create assignment'])
+            except requests.exceptions.HTTPError as ex:
+                LOG.error('Assignment creation error: %s' % str(ex))
+                raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+            return new_assignment
+
+    def delete_role(self, employee_id, scope_id, scope_type='organization'):
+        """
+        Delete an employee's role/permission for a given scope.
+        This is used when removing pool roles.
+
+        Args:
+            employee_id: The employee ID whose role needs to be deleted
+            scope_id: The scope (organization or pool) ID
+            scope_type: Type of scope ('organization' or 'pool')
+
+        Returns:
+            True if assignment was deleted
+        """
+        # Validate the employee exists
+        employee = self.get(employee_id)
+        if not employee:
+            raise NotFoundException(Err.OE0002, [Employee.__name__, employee_id])
+
+        # Get current assignments for this user
+        try:
+            _, assignments = self.auth_client.assignment_list(employee.auth_user_id)
+        except requests.exceptions.HTTPError as ex:
+            LOG.error('Assignment list error: %s' % str(ex))
+            raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+        # Find the assignment for this scope
+        assignment_to_delete = None
+        for assignment in assignments:
+            if assignment['assignment_resource'] == scope_id:
+                assignment_to_delete = assignment
+                break
+
+        if not assignment_to_delete:
+            # Assignment doesn't exist, nothing to delete
+            return True
+
+        # Delete the assignment
+        try:
+            code, _ = self.auth_client.assignment_delete(
+                id=assignment_to_delete['assignment_id'],
+                user_id=employee.auth_user_id
+            )
+            if code != 204:
+                raise WrongArgumentsException(Err.OE0435,
+                    ['Failed to delete assignment'])
+        except requests.exceptions.HTTPError as ex:
+            LOG.error('Assignment deletion error: %s' % str(ex))
+            raise WrongArgumentsException(Err.OE0435, [str(ex)])
+
+        return True
+
 
 class EmployeeAsyncController(BaseAsyncControllerWrapper):
     def _get_controller_class(self):

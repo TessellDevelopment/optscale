@@ -427,6 +427,162 @@ class EmployeeAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler,
             raise OptHTTPError.from_opt_exception(401, ex)
 
 
+class EmployeeRoleAsyncHandler(BaseHandler, BaseAuthHandler):
+    def _get_controller_class(self):
+        return EmployeeAsyncController
+
+    async def patch(self, id, **kwargs):
+        """
+        ---
+        description: |
+            Update employee's role in organization or pool
+            Required permission: EDIT_PARTNER (organization manager or admin)
+        tags: [employees]
+        summary: Update employee role
+        parameters:
+        -   name: id
+            in: path
+            description: Employee ID
+            required: true
+            type: string
+        -   in: body
+            name: body
+            description: Role update parameters
+            required: true
+            schema:
+                type: object
+                required: [role_purpose, scope_id]
+                properties:
+                    role_purpose:
+                        type: string
+                        description: "New role purpose"
+                        enum: [optscale_member, optscale_engineer, optscale_manager]
+                    scope_id:
+                        type: string
+                        description: "Organization or pool ID where role applies"
+                    scope_type:
+                        type: string
+                        description: "Type of scope (organization or pool)"
+                        enum: [organization, pool]
+                        default: organization
+        responses:
+            200:
+                description: Success (returns updated assignment info)
+                schema:
+                    type: object
+                    properties:
+                        assignment_id: {type: string}
+                        assignment_resource: {type: string}
+                        role_id: {type: integer}
+                        user_id: {type: string}
+            400:
+                description: |
+                    Wrong arguments:
+                    - OE0216: Argument is not provided
+                    - OE0217: Invalid parameter
+                    - OE0435: Failed dependency
+            401:
+                description: |
+                    Unauthorized:
+                    - OE0235: Unauthorized
+                    - OE0237: This resource requires authorization
+            403:
+                description: |
+                    Forbidden:
+                    - OE0234: Forbidden (only organization managers can update roles)
+            404:
+                description: |
+                    Not found:
+                    - OE0002: Employee not found
+                    - OE0002: Assignment not found
+        security:
+        - token: []
+        """
+        # Only organization managers can update roles
+        await self.check_permissions('EDIT_PARTNER', 'employee', id)
+
+        data = self._request_body()
+        role_purpose = data.get('role_purpose')
+        scope_id = data.get('scope_id')
+        scope_type = data.get('scope_type', 'organization')
+
+        if not role_purpose:
+            raise OptHTTPError(400, Err.OE0216, ['role_purpose'])
+        if not scope_id:
+            raise OptHTTPError(400, Err.OE0216, ['scope_id'])
+
+        try:
+            res = await run_task(
+                self.controller.update_role,
+                id, role_purpose, scope_id, scope_type
+            )
+        except WrongArgumentsException as ex:
+            raise OptHTTPError.from_opt_exception(400, ex)
+
+        self.write(json.dumps(res, cls=ModelEncoder))
+
+    async def delete(self, id, **kwargs):
+        """
+        ---
+        description: |
+            Delete employee role for a specific scope (e.g., remove pool role)
+            Required permission: EDIT_PARTNER
+        tags: [employees]
+        summary: Delete employee role
+        parameters:
+        -   name: id
+            in: path
+            description: Employee ID
+            required: true
+            type: string
+        -   name: scope_id
+            in: query
+            description: Pool or organization ID
+            required: true
+            type: string
+        -   name: scope_type
+            in: query
+            description: Type of scope
+            required: false
+            type: string
+            default: pool
+        responses:
+            204:
+                description: Success
+            400:
+                description: |
+                    Wrong arguments:
+                    - OE0216: Argument is required
+            403:
+                description: |
+                    Forbidden:
+                    - OE0234: Forbidden
+            404:
+                description: |
+                    Not found:
+                    - OE0002: Employee not found
+        security:
+        - token: []
+        """
+        await self.check_permissions('EDIT_PARTNER', 'employee', id)
+
+        scope_id = self.get_arg('scope_id', str)
+        scope_type = self.get_arg('scope_type', str, 'pool')
+
+        if not scope_id:
+            raise OptHTTPError(400, Err.OE0216, ['scope_id'])
+
+        try:
+            await run_task(
+                self.controller.delete_role,
+                id, scope_id, scope_type
+            )
+        except WrongArgumentsException as ex:
+            raise OptHTTPError.from_opt_exception(400, ex)
+
+        self.set_status(204)
+
+
 class AuthorizedEmployeeAsyncCollectionHandler(EmployeeAsyncCollectionHandler):
 
     async def post(self, **url_params):
