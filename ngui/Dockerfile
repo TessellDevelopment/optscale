@@ -21,6 +21,9 @@ FROM source AS builder
 
 WORKDIR /usr/src/app
 
+# Generate GraphQL types before build
+RUN pnpm codegen
+
 RUN pnpm run -r build
   
 # Prepare production dependencies for the server

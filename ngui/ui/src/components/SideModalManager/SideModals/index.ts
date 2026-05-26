@@ -35,6 +35,7 @@ import DeletePoolModal from "./DeletePoolModal";
 import DeletePowerScheduleModal from "./DeletePowerScheduleModal";
 import DeleteSshKeyModal from "./DeleteSshKeyModal";
 import DeleteWebhookModal from "./DeleteWebhookModal";
+import DismissInvitationModal from "./DismissInvitationModal";
 import DisconnectCloudAccountModal from "./DisconnectCloudAccountModal";
 import DisconnectGoogleCalendarModal from "./DisconnectGoogleCalendarModal";
 import EditLeaderboardModal from "./EditLeaderboardModal";
@@ -140,4 +141,5 @@ export {
   DataSourceBillingReimportModal,
   ShareRunLinkModal,
   AwsAssumedRoleCredentialsModal,
+  DismissInvitationModal,
 };

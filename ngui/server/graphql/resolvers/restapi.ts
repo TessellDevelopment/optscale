@@ -62,6 +62,9 @@ const resolvers: Resolvers = {
     invitations: async (_, __, { dataSources }) => {
       return dataSources.restapi.getInvitations();
     },
+    organizationInvitations: async (_, { organizationId }, { dataSources }) => {
+      return dataSources.restapi.getOrganizationInvitations(organizationId);
+    },
     organizationFeatures: async (_, { organizationId }, { dataSources }) => {
       return dataSources.restapi.getOrganizationFeatures(organizationId);
     },
@@ -138,6 +141,9 @@ const resolvers: Resolvers = {
     },
     updateInvitation: async (_, { invitationId, action }, { dataSources }) => {
       return dataSources.restapi.updateInvitation(invitationId, action);
+    },
+    dismissInvitation: async (_, { invitationId }, { dataSources }) => {
+      return dataSources.restapi.dismissInvitation(invitationId);
     },
     updateOrganizationThemeSettings: async (_, { organizationId, value }, { dataSources }) => {
       return dataSources.restapi.updateOrganizationThemeSettings(organizationId, value);

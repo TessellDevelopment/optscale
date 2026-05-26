@@ -618,6 +618,18 @@ export default gql`
     invite_assignments: [InvitationAssignment!]
   }
 
+  type OrganizationInvitation {
+    id: String!
+    email: String!
+    owner_name: String!
+    owner_email: String!
+    organization: String!
+    organization_id: String!
+    created_at: Int!
+    ttl: Int!
+    invite_assignments: [InvitationAssignment!]
+  }
+
   input UpdateOrganizationInput {
     name: String
     currency: String
@@ -796,6 +808,7 @@ export default gql`
     dataSource(dataSourceId: ID!, requestParams: DataSourceRequestParams): DataSourceInterface
     employeeEmails(employeeId: ID!): [EmployeeEmail]
     invitations: [Invitation]
+    organizationInvitations(organizationId: ID!): [OrganizationInvitation]
     organizationFeatures(organizationId: ID!): JSONObject
     organizationThemeSettings(organizationId: ID!): JSONObject
     organizationPerspectives(organizationId: ID!): JSONObject
@@ -824,6 +837,7 @@ export default gql`
     updateOrganization(organizationId: ID!, params: UpdateOrganizationInput!): Organization
     deleteOrganization(organizationId: ID!): String
     updateInvitation(invitationId: String!, action: String!): String
+    dismissInvitation(invitationId: String!): String
     updateOrganizationThemeSettings(organizationId: ID!, value: JSONObject!): JSONObject
     updateOrganizationPerspectives(organizationId: ID!, value: JSONObject!): JSONObject
     createStripeCheckoutSession(organizationId: ID!, params: CreateStripeCheckoutSessionInput!): StripeSession

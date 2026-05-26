@@ -220,7 +220,8 @@ class InviteAsyncCollectionHandler(BaseAsyncCollectionHandler,
         ---
         description: |
             Get list of invites. If used with token returns invites for current
-            user.
+            user. Organization managers can see all pending invites for their
+            organization by passing organization_id.
             Required permission: TOKEN or CLUSTER_SECRET
         tags: [invites]
         summary: List of invites
@@ -298,6 +299,22 @@ class InviteAsyncCollectionHandler(BaseAsyncCollectionHandler,
             user_info = await self.get_user_info(user_id)
             email = user_info['email']
         organization_id = self.get_arg('organization_id', str, None)
+
+        # Check if user is organization manager
+        if organization_id and not self.check_cluster_secret(raises=False):
+            try:
+                is_manager = await run_task(
+                    self.controller.check_user_is_org_manager,
+                    org_ids=[organization_id],
+                    pool_ids=[]
+                )
+                if is_manager:
+                    # Managers can see all invites for the organization
+                    email = None
+            except OptHTTPError:
+                # If check fails, keep the user's email filter
+                pass
+
         res = await run_task(self.controller.list, organization_id, email)
         invites = {'invites': [invite.to_dict() for invite in res]}
         self.write(json.dumps(invites, cls=ModelEncoder))
@@ -377,6 +394,46 @@ class InvitesAsyncItemHandler(BaseAsyncItemHandler, BaseAuthHandler):
             'decline': self.controller.decline_invite
         }
         await run_task(action_map[action], id, user_info)
+        self.set_status(204)
+
+    async def delete(self, id, **kwargs):
+        """
+        ---
+        description: |
+            Dismiss (delete) a pending invite. Organization managers can dismiss
+            any invite for their organization. Regular users can only dismiss
+            invites sent to their email.
+            Required permission: TOKEN
+        tags: [invites]
+        summary: Dismiss invite
+        parameters:
+        -   name: id
+            in: path
+            description: Invite ID
+            required: true
+            type: string
+        responses:
+            204:
+                description: Invite dismissed successfully
+            401:
+                description: |
+                    Unauthorized:
+                    - OE0235: Unauthorized
+                    - OE0237: This resource requires authorization
+            403:
+                description: |
+                    Forbidden:
+                    - OE0234: Forbidden - User doesn't have permission to dismiss this invite
+            404:
+                description: |
+                    Not found:
+                    - OE0002: Invite not found
+        security:
+        - token: []
+        """
+        user_id = await self.check_self_auth()
+        user_info = await self.get_user_info(user_id)
+        await run_task(self.controller.dismiss_invite, id, user_info)
         self.set_status(204)
 
     async def get(self, id, **kwargs):
