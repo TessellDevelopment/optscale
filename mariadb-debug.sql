@@ -1,6 +1,7 @@
----
+--- Login to mariadb
  mysql -u root -pmy-password-01 my-db
----
+
+--- Check and Purge rabbitmq queues
 rabbitmqadmin list queues name messages messages_ready messages_unacknowledged
 rabbitmqadmin purge queue name=report-import
 
@@ -44,33 +45,33 @@ WHERE deleted_at = 0
 
 
 -- Get all cloud accounts that have not been imported in the last 5 days
-  SELECT 
-    id,
-    name,
-    type,
-    FROM_UNIXTIME(last_import_modified_at) as last_modified,
-    DATEDIFF(NOW(), FROM_UNIXTIME(last_import_modified_at)) as days_gap,
-    CASE 
-        WHEN type = 'AWS_CNR' THEN CONCAT(
-            'Will import from ',
-            DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
-            ' to ',
-            CURDATE(),
-            ' (~', 
-            DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
-            ' days)'
-        )
-        WHEN type = 'AZURE_CNR' THEN CONCAT(
-            'Will import from ',
-            DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
-            ' to ',
-            CURDATE(),
-            ' (~',
-            DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
-            ' days)'
-        )
-        WHEN type = 'GCP_CNR' THEN 'Will import last_expense_date - 3 days to today'
-    END as import_range_description
+SELECT 
+id,
+name,
+type,
+FROM_UNIXTIME(last_import_modified_at) as last_modified,
+DATEDIFF(NOW(), FROM_UNIXTIME(last_import_modified_at)) as days_gap,
+CASE 
+    WHEN type = 'AWS_CNR' THEN CONCAT(
+        'Will import from ',
+        DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
+        ' to ',
+        CURDATE(),
+        ' (~', 
+        DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
+        ' days)'
+    )
+    WHEN type = 'AZURE_CNR' THEN CONCAT(
+        'Will import from ',
+        DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
+        ' to ',
+        CURDATE(),
+        ' (~',
+        DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
+        ' days)'
+    )
+    WHEN type = 'GCP_CNR' THEN 'Will import last_expense_date - 3 days to today'
+END as import_range_description
 FROM cloudaccount 
 WHERE deleted_at = 0
 ORDER BY type, last_import_modified_at;

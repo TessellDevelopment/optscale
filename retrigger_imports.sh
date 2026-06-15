@@ -1,249 +1,289 @@
-#!/bin/bash
-
-##############################################################################
-# Description: Manually trigger imports for all cloud accounts
-#
-# Usage:
-#   ./retrigger_imports.sh [ACCOUNT_ID] [FROM_DATE]
-#
-# Examples:
-#   ./retrigger_imports.sh                           # Trigger normal import for all accounts
-#   ./retrigger_imports.sh abc123                    # Trigger normal import for specific account
-#   ./retrigger_imports.sh abc123 2026-04-01         # Reset import to April 1st, 2026 and trigger
-#   ./retrigger_imports.sh all 2026-04-01            # Reset all accounts to April 1st, 2026
-#
-##############################################################################
+#!/usr/bin/env bash
+# Usage: ./retrigger_imports.sh [ACCOUNT_ID ...] [--all] [--cloud-type aws|azure|gcp] [--from-date YYYY-MM-DD]
 
 set -e
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+RESET="\033[0m"
+BOLD="\033[1m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
 
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  Trigger Manual Imports${NC}"
-echo -e "${BLUE}========================================${NC}"
-echo ""
-
-ACCOUNT_ID=${1}
-FROM_DATE=${2}
-
+log_info()  { echo -e "${CYAN}${BOLD}[INFO]${RESET}  ${*}"; }
+log_ok()    { echo -e "${GREEN}${BOLD}[OK]${RESET}    ${*}"; }
+log_warn()  { echo -e "${YELLOW}${BOLD}[WARN]${RESET}  ${*}"; }
+log_error() { echo -e "${RED}${BOLD}[ERROR]${RESET} ${*}"; }
 
 USER_CONFIG="optscale-deploy/overlay/user_config.yml"
-if [ ! -f "$USER_CONFIG" ]; then
-    echo -e "${RED}Error: $USER_CONFIG not found!${NC}"
-    echo "Please run this script from the OptScale repository root."
-    exit 1
-fi
-
-echo -e "${YELLOW}Reading cluster secret...${NC}"
-CLUSTER_SECRET=$(grep -A1 "^secrets:" "$USER_CONFIG" | grep "cluster:" | awk '{print $2}')
-
-if [ -z "$CLUSTER_SECRET" ]; then
-    echo -e "${RED}Error: Could not find cluster secret in $USER_CONFIG${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Cluster secret found${NC}"
-
-echo ""
-echo -e "${YELLOW}===========================================\n"
-echo -e "This script requires 'kubefwd' to be running.\n"
-echo -e "Please run in a separate terminal:\n"
-echo -e "  ${BLUE}sudo kubefwd svc${NC}\n"
-echo -e "===========================================\n"
-echo -e "${NC}"
-
-read -p "Press Enter once kubefwd is running and services are accessible..."
-
 MYSQL_HOST="mariadb"
 MYSQL_PORT="3306"
 MYSQL_USER="root"
 MYSQL_PASSWORD="my-password-01"
 MYSQL_DB="my-db"
-
-REST_API_URL="http://restapi:80"
 MYSQL_BIN="/opt/homebrew/opt/mysql-client/bin/mysql"
+REST_API_URL="http://restapi:80"
 
-echo ""
-echo -e "${YELLOW}MariaDB: $MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DB${NC}"
-echo -e "${YELLOW}REST API: $REST_API_URL${NC}"
+# Inclusion list — if not empty, ONLY these datasources are processed (exclusion list is ignored)
+# Applied only in --all mode
+# INCLUSION_LIST=(
+#     "citizens_prod_infra"
+#     "dbai-rnd"
+#     "devtest-infra"
+#     "forbes_byoa_1"
+#     "JD"
+#     "native-cp-rnd"
+#     "ops-production"
+#     "staging-infra"
+#     "starship-dev"
+#     "starship-prod"
+#     "tessell-ops"
+#     "tessell-poc-dp"
+# )
+INCLUSION_LIST=()
 
-# Validate FROM_DATE if provided
+# Exclusion list — ignored when INCLUSION_LIST is not empty
+# Applied only in --all mode
+# EXCLUSION_LIST=(
+#     "citizens_dbservices_0"
+#     "Tessell"
+#     "canary-byoa-0"
+#     "qa-dataplane-byoa-3"
+#     "finops"
+#     "tessell_dba_0"
+# )
+EXCLUSION_LIST=()
+
+ALL_ACCOUNTS=false
+CLOUD_TYPE=""
+FROM_DATE=""
+ACCOUNT_IDS_INPUT=()
+ACCOUNT_IDS=()
+ACCOUNT_NAMES=()
+CLUSTER_SECRET=""
 FROM_DATE_TIMESTAMP=""
-if [ -n "$FROM_DATE" ]; then
-    echo ""
-    echo -e "${YELLOW}Date-based import requested: $FROM_DATE${NC}"
 
-    # Validate date format (YYYY-MM-DD)
-    if ! [[ "$FROM_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-        echo -e "${RED}Error: Invalid date format. Use YYYY-MM-DD (e.g., 2026-04-01)${NC}"
+function parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case ${1} in
+            --all)          ALL_ACCOUNTS=true ;;
+            --cloud-type)   CLOUD_TYPE=${2}; shift ;;
+            --from-date)    FROM_DATE=${2}; shift ;;
+            *)              ACCOUNT_IDS_INPUT+=(${1}) ;;
+        esac
+        shift
+    done
+
+    if [[ ${ALL_ACCOUNTS} != true && ${#ACCOUNT_IDS_INPUT[@]} -eq 0 ]]; then
+        log_error "Provide at least one account ID or use --all"
         exit 1
     fi
 
-    # Convert date to Unix timestamp using MySQL
-    FROM_DATE_TIMESTAMP=$($MYSQL_BIN -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD -D $MYSQL_DB -N -s -e "SELECT UNIX_TIMESTAMP('$FROM_DATE 00:00:00');")
-
-    if [ -z "$FROM_DATE_TIMESTAMP" ] || [ "$FROM_DATE_TIMESTAMP" = "NULL" ]; then
-        echo -e "${RED}Error: Failed to convert date to timestamp${NC}"
+    if [[ -z ${FROM_DATE} ]]; then
+        log_error "--from-date is required"
         exit 1
     fi
 
-    echo -e "${GREEN}✓ Date validated: $FROM_DATE (timestamp: $FROM_DATE_TIMESTAMP)${NC}"
+    if [[ -n ${CLOUD_TYPE} ]]; then
+        case ${CLOUD_TYPE} in
+            aws)   CLOUD_TYPE="aws_cnr" ;;
+            azure) CLOUD_TYPE="azure_cnr" ;;
+            gcp)   CLOUD_TYPE="gcp_cnr" ;;
+            *) log_error "Invalid cloud type '${CLOUD_TYPE}' — use: aws, azure, gcp"; exit 1 ;;
+        esac
+    fi
+}
+
+function is_name_in_list() {
+    local target=${1}; shift
+    for item in "${@}"; do
+        [[ ${item} == ${target} ]] && return 0
+    done
+    return 1
+}
+
+function display_datasource_filter_config() {
+    [[ ${ALL_ACCOUNTS} != true ]] && return 0
+    [[ ${#INCLUSION_LIST[@]} -gt 0 ]] && { log_info "Inclusion filter: ${#INCLUSION_LIST[@]} datasource(s)"; return 0; }
+    [[ ${#EXCLUSION_LIST[@]} -gt 0 ]] && { log_warn "Exclusion filter: ${#EXCLUSION_LIST[@]} datasource(s)"; return 0; }
+    log_info "No filter — all${CLOUD_TYPE:+ ${CLOUD_TYPE}} accounts will be processed"
+}
+
+function read_cluster_secret_from_config() {
+    [[ ! -f ${USER_CONFIG} ]] && { log_error "${USER_CONFIG} not found — run from the OptScale repository root"; exit 1; }
+    CLUSTER_SECRET=$(yq '.secrets.cluster' "${USER_CONFIG}")
+    [[ -z ${CLUSTER_SECRET} || ${CLUSTER_SECRET} == "null" ]] \
+        && { log_error "Could not find cluster secret in ${USER_CONFIG}"; exit 1; }
+    log_ok "Cluster secret found"
+}
+
+function wait_for_kubefwd_ready() {
+    log_warn "Requires kubefwd — run: ${BOLD}sudo kubefwd svc${RESET}"
+    read -p "Press Enter once kubefwd is running..."
+}
+
+function validate_and_resolve_from_date() {
+    log_info "Date-based import: ${BOLD}${FROM_DATE}${RESET}"
+    if ! [[ ${FROM_DATE} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        log_error "Invalid date format — use YYYY-MM-DD (e.g. 2026-04-01)"
+        exit 1
+    fi
+
+    FROM_DATE_TIMESTAMP=$("${MYSQL_BIN}" -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -D${MYSQL_DB} -N -s -e \
+        "SELECT UNIX_TIMESTAMP('${FROM_DATE} 00:00:00');")
+    [[ -z ${FROM_DATE_TIMESTAMP} || ${FROM_DATE_TIMESTAMP} == "NULL" ]] \
+        && { log_error "Failed to convert date to timestamp"; exit 1; }
+    log_ok "Date validated: ${FROM_DATE} → timestamp ${FROM_DATE_TIMESTAMP}"
     echo ""
-    echo -e "${YELLOW}WARNING: This will reset the following timestamps for selected account(s):${NC}"
-    echo -e "${YELLOW}  - last_import_at → $FROM_DATE_TIMESTAMP${NC}"
-    echo -e "${YELLOW}  - last_import_modified_at → $FROM_DATE_TIMESTAMP${NC}"
-    echo -e "${YELLOW}  - last_import_attempt_at → 0${NC}"
-    echo -e "${YELLOW}  - last_import_attempt_error → NULL${NC}"
+}
+
+function verify_mariadb_connection() {
+    "${MYSQL_BIN}" -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} ${MYSQL_DB} \
+        -e "SELECT 1;" &>/dev/null \
+        || { log_error "Could not connect to MariaDB — is kubefwd running?"; exit 1; }
+    log_ok "Connected"
     echo ""
-    echo -e "${YELLOW}This will cause OptScale to re-import data from $FROM_DATE onwards.${NC}"
-    echo -e "${YELLOW}For AWS: Will fetch ~5 days of data from this date${NC}"
-    echo -e "${YELLOW}For GCP: Will fetch from last expense date - 3 days${NC}"
-    echo -e "${YELLOW}For Azure: Will fetch ~1 day of data from this date${NC}"
+}
+
+function fetch_and_filter_accounts() {
+    if [[ ${ALL_ACCOUNTS} == true ]]; then
+        local where="deleted_at = 0"
+        [[ -n ${CLOUD_TYPE} ]] && where="${where} AND type = '${CLOUD_TYPE}'"
+
+        log_info "Fetching all active${CLOUD_TYPE:+ ${CLOUD_TYPE}} accounts..."
+        local raw
+        raw=$("${MYSQL_BIN}" -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} ${MYSQL_DB} -N -e \
+            "SELECT id, name FROM cloudaccount WHERE ${where} ORDER BY name;")
+        [[ -z ${raw} ]] && { log_error "No active${CLOUD_TYPE:+ ${CLOUD_TYPE}} accounts found"; exit 1; }
+        log_ok "Found $(echo "${raw}" | wc -l | tr -d ' ') total account(s)"
+
+        local -a excluded_names
+
+        while IFS=$'\t' read -r id name; do
+            if [[ ${#INCLUSION_LIST[@]} -gt 0 ]]; then
+                is_name_in_list "${name}" "${INCLUSION_LIST[@]}" \
+                    && { ACCOUNT_IDS+=("${id}"); ACCOUNT_NAMES+=("${name}"); }
+            else
+                if is_name_in_list "${name}" "${EXCLUSION_LIST[@]}"; then
+                    excluded_names+=("${name}")
+                else
+                    ACCOUNT_IDS+=("${id}"); ACCOUNT_NAMES+=("${name}")
+                fi
+            fi
+        done <<< "${raw}"
+
+        [[ ${#INCLUSION_LIST[@]} -gt 0 ]] \
+            && log_ok "  Matched: ${#ACCOUNT_IDS[@]} / ${#INCLUSION_LIST[@]}" \
+            || { [[ ${#excluded_names[@]} -gt 0 ]] && log_warn "  Excluded: ${#excluded_names[@]}"; log_ok "  To process: ${#ACCOUNT_IDS[@]}"; }
+    else
+        for id in "${ACCOUNT_IDS_INPUT[@]}"; do
+            local name
+            name=$("${MYSQL_BIN}" -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} ${MYSQL_DB} -N -s -e \
+                "SELECT name FROM cloudaccount WHERE id='${id}' AND deleted_at=0;")
+            if [[ -z ${name} ]]; then
+                log_warn "Account not found or deleted: ${id}"
+            else
+                ACCOUNT_IDS+=("${id}"); ACCOUNT_NAMES+=("${name}")
+            fi
+        done
+        [[ ${#ACCOUNT_IDS[@]} -eq 0 ]] && { log_error "No valid accounts found"; exit 1; }
+    fi
+
+    [[ ${#ACCOUNT_IDS[@]} -eq 0 ]] && { log_warn "No accounts to process"; exit 0; }
+
     echo ""
-fi
-
-echo ""
-echo -e "${YELLOW}Testing database connection...${NC}"
-if ! $MYSQL_BIN -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DB" -e "SELECT 1;" &> /dev/null; then
-    echo -e "${RED}Error: Could not connect to MariaDB${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Connected${NC}"
-
-echo ""
-echo -e "${YELLOW}Fetching cloud accounts...${NC}"
-
-CLOUD_ACCOUNT_IDS=$($MYSQL_BIN -h"$MYSQL_HOST" -P"$MYSQL_PORT" -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DB" -N -e \
-    "SELECT id FROM cloudaccount WHERE id='$ACCOUNT_ID';")
-
-if [ -z "$CLOUD_ACCOUNT_IDS" ]; then
-    echo -e "${RED}Error: No cloud accounts found${NC}"
-    exit 1
-fi
-
-ACCOUNT_COUNT=$(echo "$CLOUD_ACCOUNT_IDS" | wc -l | tr -d ' ')
-echo -e "${GREEN}✓ Found $ACCOUNT_COUNT cloud account(s)${NC}"
-
-echo ""
-if [ -n "$FROM_DATE" ]; then
-    echo -e "${YELLOW}This will:${NC}"
-    echo -e "${YELLOW}  1. Reset import timestamps to $FROM_DATE for $ACCOUNT_COUNT cloud account(s)${NC}"
-    echo -e "${YELLOW}  2. Trigger manual imports to re-fetch data from that date${NC}"
-    echo -e "${YELLOW}  3. Existing data in MongoDB/ClickHouse will be updated (not deleted)${NC}"
-else
-    echo -e "${YELLOW}This will trigger normal manual import for $ACCOUNT_COUNT cloud account(s).${NC}"
-fi
-read -p "Continue? (yes/no): " CONFIRM
-if [ "$CONFIRM" != "yes" ]; then
-    echo -e "${YELLOW}Aborted${NC}"
-    exit 0
-fi
-
-echo ""
-
-# Step 1: Reset timestamps if FROM_DATE is provided
-if [ -n "$FROM_DATE" ]; then
-    echo -e "${YELLOW}Step 1: Resetting import timestamps to $FROM_DATE...${NC}"
+    log_info "Accounts to process:"
+    for i in "${!ACCOUNT_IDS[@]}"; do
+        echo "  $((i+1)). ${ACCOUNT_NAMES[${i}]} (${ACCOUNT_IDS[${i}]})"
+    done
     echo ""
+}
 
-    RESET_COUNT=0
-    for CA_ID in $CLOUD_ACCOUNT_IDS; do
-        echo -n "$CA_ID... "
+function confirm_import_action() {
+    log_warn "Will retrigger imports for ${#ACCOUNT_IDS[@]} account(s) — reset to ${FROM_DATE}"
+    read -p "Continue? (yes/no): " CONFIRM
+    [[ ${CONFIRM} != "yes" ]] && { log_warn "Aborted"; exit 0; }
+    echo ""
+}
 
-        # Get cloud account type for display
-        CA_TYPE=$($MYSQL_BIN -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD -D $MYSQL_DB -N -s -e "SELECT type FROM cloudaccount WHERE id='$CA_ID' AND deleted_at=0;")
-
-        # Reset the import timestamps
-        $MYSQL_BIN -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD -D $MYSQL_DB -e "
+function reset_import_timestamps_to_date() {
+    log_info "Resetting timestamps to ${FROM_DATE}..."
+    for i in "${!ACCOUNT_IDS[@]}"; do
+        local ca_id=${ACCOUNT_IDS[${i}]}
+        echo -n "${ACCOUNT_NAMES[${i}]}... "
+        if "${MYSQL_BIN}" -h${MYSQL_HOST} -P${MYSQL_PORT} -u${MYSQL_USER} -p${MYSQL_PASSWORD} -D${MYSQL_DB} -e "
             UPDATE cloudaccount
-            SET
-                last_import_at = $FROM_DATE_TIMESTAMP,
-                last_import_modified_at = $FROM_DATE_TIMESTAMP,
+            SET last_import_at = ${FROM_DATE_TIMESTAMP},
+                last_import_modified_at = ${FROM_DATE_TIMESTAMP},
                 last_import_attempt_at = 0,
                 last_import_attempt_error = NULL
-            WHERE id = '$CA_ID'
-              AND deleted_at = 0;
-        " 2>/dev/null
-
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✓ Reset ($CA_TYPE)${NC}"
-            RESET_COUNT=$((RESET_COUNT + 1))
+            WHERE id = '${ca_id}' AND deleted_at = 0;" 2>/dev/null; then
+            echo -e "${GREEN}✓${RESET}"
         else
-            echo -e "${RED}✗ Failed to reset${NC}"
+            echo -e "${RED}✗${RESET}"
         fi
     done
-
     echo ""
-    echo -e "${GREEN}✓ Reset $RESET_COUNT cloud account(s)${NC}"
-    echo ""
-
-    # Small delay to ensure DB updates are flushed
     sleep 1
-fi
+}
 
-# Step 2: Trigger imports
-if [ -n "$FROM_DATE" ]; then
-    echo -e "${YELLOW}Step 2: Triggering imports...${NC}"
-else
-    echo -e "${YELLOW}Triggering imports...${NC}"
-fi
-echo ""
-
-SUCCESS_COUNT=0
-FAIL_COUNT=0
-FAILED_ACCOUNTS=()
-
-for CA_ID in $CLOUD_ACCOUNT_IDS; do
-    echo -n "$CA_ID... "
-
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-        -H "Content-Type: application/json" \
-        -H "Secret: $CLUSTER_SECRET" \
-        -d "{\"cloud_account_id\": \"$CA_ID\"}" \
-        "$REST_API_URL/restapi/v2/schedule_imports")
-
-    if [ "$HTTP_CODE" = "201" ]; then
-        echo -e "${GREEN}✓${NC}"
-        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-    else
-        echo -e "${RED}✗ (HTTP $HTTP_CODE)${NC}"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-        FAILED_ACCOUNTS+=("$CA_ID")
-    fi
-
-    sleep 0.3
-done
-
-echo ""
-echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  Summary${NC}"
-echo -e "${BLUE}========================================${NC}"
-
-if [ -n "$FROM_DATE" ]; then
-    echo -e "${YELLOW}Import reset to: $FROM_DATE${NC}"
+function trigger_scheduled_imports() {
+    log_info "Triggering imports..."
     echo ""
-fi
 
-echo -e "${GREEN}Imports triggered: $SUCCESS_COUNT${NC}"
-if [ $FAIL_COUNT -gt 0 ]; then
-    echo -e "${RED}Failed: $FAIL_COUNT${NC}"
-    echo ""
-    echo -e "${YELLOW}Failed IDs:${NC}"
-    for FAILED_ID in "${FAILED_ACCOUNTS[@]}"; do
-        echo "  $FAILED_ID"
+    local success_count=0
+    local fail_count=0
+    local -a failed_accounts
+
+    for i in "${!ACCOUNT_IDS[@]}"; do
+        local ca_id=${ACCOUNT_IDS[${i}]}
+        echo -n "${ACCOUNT_NAMES[${i}]}... "
+        local http_code
+        http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            -H "Secret: ${CLUSTER_SECRET}" \
+            -d "{\"cloud_account_id\": \"${ca_id}\"}" \
+            "${REST_API_URL}/restapi/v2/schedule_imports")
+
+        if [[ ${http_code} == "201" ]]; then
+            echo -e "${GREEN}✓${RESET}"
+            success_count=$((success_count + 1))
+        else
+            echo -e "${RED}✗ (HTTP ${http_code})${RESET}"
+            fail_count=$((fail_count + 1))
+            failed_accounts+=("${ca_id}")
+        fi
+        sleep 0.3
     done
-fi
 
-echo ""
-if [ -n "$FROM_DATE" ]; then
-    echo -e "${YELLOW}Next Steps:${NC}"
-    echo -e "  1. Monitor import progress: ${BLUE}kubectl logs -l app=diworker -f${NC}"
-    echo -e "  2. Check import status in MariaDB (see mariadb-debug.sql)"
-    echo -e "  3. Data will be re-imported from $FROM_DATE onwards"
+    print_import_summary "${success_count}" "${fail_count}" "${failed_accounts[@]}"
+}
+
+function print_import_summary() {
+    local success_count=${1}
+    local fail_count=${2}
+    shift 2
+    local -a failed_accounts=("$@")
+
     echo ""
-fi
-echo -e "${GREEN}Done!${NC}"
+    [[ -n ${CLOUD_TYPE} ]] && log_info "Cloud type: ${CLOUD_TYPE}"
+    log_info "Reset date: ${FROM_DATE}"
+    log_ok "Triggered: ${success_count}"
+
+    if [[ ${fail_count} -gt 0 ]]; then
+        log_error "Failed: ${fail_count}"
+        for id in "${failed_accounts[@]}"; do echo "  ${id}"; done
+    fi
+    log_ok "Done!"
+}
+
+parse_args "$@"
+display_datasource_filter_config
+read_cluster_secret_from_config
+wait_for_kubefwd_ready
+validate_and_resolve_from_date
+verify_mariadb_connection
+fetch_and_filter_accounts
+confirm_import_action
+reset_import_timestamps_to_date
+trigger_scheduled_imports

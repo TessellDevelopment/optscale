@@ -1,163 +1,136 @@
 #!/usr/bin/env bash
-# ./build.sh [component1] [component2] [...] [--tag tag] [--push] [-r registry] [-u username] [-p password] [--no-cache] [--use-nerdctl]
-# Multiple components can be specified and will be built in parallel
-# leave registry empty if default registry [docker.io] used
+# Usage: ./build.sh [component ...] [--tag tag] [--push] [-r registry] [-u username] [-p password] [--no-cache]
 
 set -e
 
-# Initialize default values
-COMPANY="hystax"
+RESET="\033[0m"
+BOLD="\033[1m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
+GREY="\033[0;37m"
+
+log_info()    { echo -e "${CYAN}${BOLD}[INFO]${RESET}  ${*}"; }
+log_queue()   { echo -e "${GREY}[QUEUE]${RESET} ${*}"; }
+log_ok()      { echo -e "${GREEN}${BOLD}[OK]${RESET}    ${*}"; }
+log_warn()    { echo -e "${YELLOW}${BOLD}[WARN]${RESET}  ${*}"; }
+log_error()   { echo -e "${RED}${BOLD}[ERROR]${RESET} ${*}"; }
+
 REGISTRY=""
 LOGIN=""
 PASSWORD=""
 COMPONENTS_LIST=()
-INPUT_TAG=""
+BUILD_TAG=""
 FLAGS=""
-NO_CACHE=false
-USE_NERDCTL=false
-BUILD_TOOL="docker"
 PUSH=false
 
-# Parse command line arguments
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --tag) INPUT_TAG="$2"; shift ;;
-        --push) PUSH=true ;;
-        -r) REGISTRY="$2"; shift ;;
-        -u) LOGIN="$2"; shift ;;
-        -p) PASSWORD="$2"; shift ;;
-        --no-cache) NO_CACHE=true ;;
-        --use-nerdctl) USE_NERDCTL=true ;;
-        *)
-            # Collect all non-flag arguments as components
-            COMPONENTS_LIST+=("$1")
-            ;;
-    esac
-    shift
-done
-
-# Set build tool based on flag
-if [[ "$USE_NERDCTL" == true ]]; then
-    BUILD_TOOL="nerdctl"
-fi
-
-# Set --no-cache flag
-if [[ "$NO_CACHE" == true ]]; then
-    FLAGS="--no-cache"
-fi
-
-BUILD_TAG=${INPUT_TAG:-'local'}
-FIND_CMD="find . -mindepth 2 -maxdepth 3 -print | grep Dockerfile | grep -vE '(test|.j2)'"
-
-# Build grep pattern for multiple components
-if [[ ${#COMPONENTS_LIST[@]} -gt 0 ]]; then
-    COMPONENT_PATTERN=$(printf "|%s" "${COMPONENTS_LIST[@]}")
-    COMPONENT_PATTERN=${COMPONENT_PATTERN:1}  # Remove leading |
-    FIND_CMD="${FIND_CMD} | grep -E '(${COMPONENT_PATTERN})/'"
-fi
-
-# Login to registry if push is enabled
-if [[ "$PUSH" == true ]]; then
-  if [[ -z "${LOGIN}" || -z "${PASSWORD}" ]]; then
-    echo "Error: --push requires -u (username) and -p (password)"
-    exit 1
-  fi
-  echo "$BUILD_TOOL login"
-  $BUILD_TOOL login -u "${LOGIN}" -p "${PASSWORD}"
-fi
-
-push_image () {
-   echo "Pushing $1:$2"
-    if [ -z $3 ]; then
-      $BUILD_TOOL tag "$1:$2" "$COMPANY/$1:$2"
-      $BUILD_TOOL push "$COMPANY/$1:$2"
-    else
-      $BUILD_TOOL tag "$1:$2" "$3/$1:$2"
-      $BUILD_TOOL push "$3/$1:$2"
-    fi
+function parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case ${1} in
+            --tag)        BUILD_TAG=${2}; shift ;;
+            --push)       PUSH=true ;;
+            -r)           REGISTRY=${2}; shift ;;
+            -u)           LOGIN=${2}; shift ;;
+            -p)           PASSWORD=${2}; shift ;;
+            --no-cache)   FLAGS="--no-cache" ;;
+            *)            COMPONENTS_LIST+=(${1}) ;;
+        esac
+        shift
+    done
+    BUILD_TAG=${BUILD_TAG:-local}
 }
 
-build_and_push_component() {
-    local DOCKERFILE=$1
-    local COMPONENT_NAME=$2
-    local BUILD_TAG=$3
-    local FLAGS=$4
-    local PUSH=$5
-    local REGISTRY=$6
-    local BUILD_TOOL=$7
+function login_registry() {
+    [[ ${PUSH} != true ]] && return 0
+    docker login -u ${LOGIN} -p ${PASSWORD}
+}
 
-    echo "[${COMPONENT_NAME}] Starting build..."
-    if $BUILD_TOOL build $FLAGS -t ${COMPONENT_NAME}:${BUILD_TAG} -f ${DOCKERFILE} . --platform linux/amd64; then
-        echo "[${COMPONENT_NAME}] Build successful"
+function discover_dockerfiles() {
+    local cmd="find . -mindepth 2 -maxdepth 3 -print | grep Dockerfile | grep -vE '(test|.j2)'"
 
-        if [[ "$PUSH" == true ]]; then
-            echo "[${COMPONENT_NAME}] Starting push..."
-            if push_image $COMPONENT_NAME $BUILD_TAG $REGISTRY; then
-                echo "[${COMPONENT_NAME}] Push successful"
-                return 0
-            else
-                echo "[${COMPONENT_NAME}] Push failed"
-                return 1
-            fi
+    if [[ ${#COMPONENTS_LIST[@]} -gt 0 ]]; then
+        local pattern
+        pattern=$(printf "|%s" "${COMPONENTS_LIST[@]}")
+        pattern=${pattern:1}
+        cmd="${cmd} | grep -E '(${pattern})/'"
+    fi
+
+    eval "${cmd}"
+}
+
+function build_and_push_component() {
+    local dockerfile=${1}
+    local component=${2}
+
+    log_info "[${BOLD}${component}${RESET}] Starting build..."
+    docker build ${FLAGS} -t "${component}:${BUILD_TAG}" -f "${dockerfile}" . --platform linux/amd64 \
+        || { log_error "[${BOLD}${component}${RESET}] Build failed"; return 1; }
+    log_ok "[${BOLD}${component}${RESET}] Build successful"
+
+    [[ ${PUSH} != true ]] && return 0
+
+    log_info "[${BOLD}${component}${RESET}] Starting push..."
+    docker tag ${component}:${BUILD_TAG} ${REGISTRY}/${component}:${BUILD_TAG} \
+        && docker push ${REGISTRY}/${component}:${BUILD_TAG} \
+        || { log_error "[${BOLD}${component}${RESET}] Push failed"; return 1; }
+    log_ok "[${BOLD}${component}${RESET}] Push successful"
+}
+
+function run_builds() {
+    local -a pids
+    local -a components
+
+    while IFS= read -r dockerfile; do
+        local component=${dockerfile%/*}
+        component=${component##*/}
+        log_queue "Queuing ${BOLD}${component}${RESET} — tag: ${YELLOW}${BUILD_TAG}${RESET}"
+        build_and_push_component "${dockerfile}" "${component}" &
+        pids+=($!)
+        components+=("${component}")
+    done < <(discover_dockerfiles)
+
+    log_info "=== All builds started, waiting for completion ==="
+    log_info "Total components: ${BOLD}${#pids[@]}${RESET}"
+
+    local failed=false
+    local -a failed_components
+
+    for i in "${!pids[@]}"; do
+        log_info "Waiting for ${BOLD}${components[${i}]}${RESET} (PID: ${pids[${i}]})..."
+        if wait "${pids[${i}]}"; then
+            log_ok "${BOLD}${components[${i}]}${RESET} completed successfully"
+        else
+            log_error "${BOLD}${components[${i}]}${RESET} failed with exit code $?"
+            failed=true
+            failed_components+=("${components[${i}]}")
         fi
-        return 0
-    else
-        echo "[${COMPONENT_NAME}] Build failed"
-        return 1
-    fi
+    done
+
+    print_summary "${#pids[@]}" "${failed}" "${failed_components[@]}"
 }
 
-export -f push_image
-export -f build_and_push_component
-export COMPANY
-export BUILD_TOOL
+function print_summary() {
+    local total=${1}
+    local failed=${2}
+    shift 2
+    local failed_components=("$@")
 
-
-declare -a PIDS
-declare -a COMPONENTS
-
-for DOCKERFILE in $(eval ${FIND_CMD} | xargs)
-do
-    COMPONENT_NAME=$(echo "${DOCKERFILE}" | awk -F '/' '{print $(NF-1)}')
-    echo "Queuing build for ${COMPONENT_NAME}, build tag: ${BUILD_TAG}"
-    build_and_push_component "$DOCKERFILE" "$COMPONENT_NAME" "$BUILD_TAG" "$FLAGS" "$PUSH" "$REGISTRY" "$BUILD_TOOL" &
-    PIDS+=($!)
-    COMPONENTS+=("$COMPONENT_NAME")
-done
-
-echo "=== All builds started, waiting for completion ==="
-echo "Total components: ${#PIDS[@]}"
-
-FAILED=false
-declare -a FAILED_COMPONENTS
-
-for i in "${!PIDS[@]}"; do
-    PID=${PIDS[$i]}
-    COMPONENT_NAME=${COMPONENTS[$i]}
-
-    echo "Waiting for ${COMPONENT_NAME} (PID: $PID)..."
-
-    if wait $PID; then
-        echo "✓ ${COMPONENT_NAME} completed successfully"
-    else
-        EXIT_CODE=$?
-        echo "✗ ${COMPONENT_NAME} failed with exit code $EXIT_CODE"
-        FAILED=true
-        FAILED_COMPONENTS+=("$COMPONENT_NAME")
-    fi
-done
-
-echo ""
-echo "=== Build Summary ==="
-echo "Total components: ${#PIDS[@]}"
-
-if [[ "$FAILED" == true ]]; then
-    echo "Failed components: ${#FAILED_COMPONENTS[@]}"
-    echo "Failed: ${FAILED_COMPONENTS[*]}"
     echo ""
-    echo "❌ Build failed!"
-    exit 1
-else
-    echo "✓ All components built successfully!"
-    exit 0
-fi
+    log_info "=== Build Summary ==="
+    log_info "Total components: ${BOLD}${total}${RESET}"
+
+    if [[ ${failed} == true ]]; then
+        log_warn "Failed components: ${#failed_components[@]}"
+        log_warn "Failed: ${failed_components[*]}"
+        echo ""
+        log_error "❌ Build failed!"
+        exit 1
+    fi
+
+    log_ok "✓ All components built successfully!"
+}
+
+parse_args "$@"
+login_registry
+run_builds
