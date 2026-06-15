@@ -1,0 +1,31 @@
+{{- if and .Values.tailscale.oauth.client_id .Values.tailscale.oauth.client_secret }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailscale-nginx-ingress
+  namespace: default
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: "tessell-optscale"
+    tailscale.com/tags: "tag:ingress-proxy-svc-for-optscale-nginx"
+  labels:
+    app: tailscale-nginx-ingress
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 443
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 80
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+{{- end }}

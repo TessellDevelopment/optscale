@@ -153,6 +153,20 @@ ssl:
         secret_access_key: secretkey
         hosted_zone_id: hostedzoneid
 
+# Tailscale operator configuration
+# Deploys Tailscale operator to enable private network access to your cluster
+# See https://tailscale.com/kb/1236/kubernetes-operator for more details
+tailscale:
+  # OAuth client credentials from Tailscale admin console
+  # Create at: https://login.tailscale.com/admin/settings/oauth
+  oauth:
+    client_id: ""
+    client_secret: ""
+  # Tags assigned to the Tailscale operator
+  defaultTags:
+    - ""
+    - ""
+
 # Email verification is disabled by default. Set the flag to `False` to enable it
 disable_email_verification: True
 

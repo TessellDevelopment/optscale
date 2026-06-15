@@ -1026,6 +1026,20 @@ ssl:
     issuer_type: issuer
     issuer:
 
+# Tailscale operator configuration
+# Deploys Tailscale operator to enable private network access to your cluster
+# See https://tailscale.com/kb/1236/kubernetes-operator for more details
+tailscale:
+  # OAuth client credentials from Tailscale admin console
+  # Create at: https://login.tailscale.com/admin/settings/oauth
+  oauth:
+    client_id: ""
+    client_secret: ""
+  # Tags assigned to the Tailscale operator
+  defaultTags:
+    - ""
+    - ""
+
 # list of overlays used by runkube to start Optscale (necessary to use proper defaults when adding new keys on update)
 overlay_list: ""
 
