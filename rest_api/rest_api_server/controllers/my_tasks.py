@@ -126,7 +126,8 @@ class MyTasksController(BaseController, MongoMixin):
             return result
 
     def get_exceeded_pools_and_forecasts(
-            self, root_pool_id, pool_details=False, forecast_details=False):
+            self, root_pool_id, pool_details=False, forecast_details=False,
+            managed_pool_ids=None):
         b_ctrl = PoolController(self.session, self._config, self.token)
         pool_limit_costs = b_ctrl.get_pool_hierarchy_costs(
             root_pool_id)
@@ -134,6 +135,9 @@ class MyTasksController(BaseController, MongoMixin):
         exceeded_pools = []
         exceeded_forecasts = []
         for pool_info in pool_limit_costs.values():
+            if managed_pool_ids is not None and \
+                    pool_info['id'] not in managed_pool_ids:
+                continue
             if pool_info['cost'] > pool_info['limit']:
                 exceeded_pools.append(pool_info)
             elif pool_info['forecast'] > pool_info['limit']:
@@ -356,8 +360,13 @@ class MyTasksController(BaseController, MongoMixin):
 
         pool_details = 'exceeded_pools' in types
         forecast_details = 'exceeded_pool_forecasts' in types
+        pool_ctrl = PoolController(self.session, self._config, self.token)
+        managed_pools = pool_ctrl.get_all_available_pools_by_permissions(
+            employee.auth_user_id, org.id, self.token,
+            permissions=['MANAGE_RESOURCES'])['MANAGE_RESOURCES']
+        managed_pool_ids = {pool.id for pool in managed_pools}
         result.update(self.get_exceeded_pools_and_forecasts(
-            org.pool_id, pool_details, forecast_details))
+            org.pool_id, pool_details, forecast_details, managed_pool_ids))
 
         violated_details = 'violated_constraints' in types
         differ_details = 'differ_constraints' in types

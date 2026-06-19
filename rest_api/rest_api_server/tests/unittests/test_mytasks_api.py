@@ -454,6 +454,46 @@ class TestMyTasksApi(TestApiBase):
                 'forecast': 1530,
             })
 
+    @freeze_time("2020-04-30 17:34:00")
+    def test_exceeded_pools_scoped_by_manager(self):
+        # org pool limit 100, sub_pool limit 20 (from setUp)
+        # spend 101 on sub_pool so both sub_pool and org pool exceed their limits
+        self.add_expense_records(self.sub_pool['id'], 101)
+
+        # org-level manager sees both exceeded pools
+        with patch(
+            'rest_api.rest_api_server.controllers.pool.'
+            'PoolController._get_assignments_actions_by_token',
+            return_value={
+                'MANAGE_RESOURCES': [['organization', self.org_id]],
+                'MANAGE_OWN_RESOURCES': [['organization', self.org_id]],
+            }
+        ):
+            code, tasks = self.client.my_tasks_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertIn('exceeded_pools', tasks)
+        self.assertEqual(tasks['exceeded_pools']['count'], 2)
+
+        # sub_pool-scoped manager sees only sub_pool, not the org root pool
+        with patch(
+            'rest_api.rest_api_server.controllers.pool.'
+            'PoolController._get_assignments_actions_by_token',
+            return_value={
+                'MANAGE_RESOURCES': [['pool', self.sub_pool['id']]],
+                'MANAGE_OWN_RESOURCES': [['pool', self.sub_pool['id']]],
+            }
+        ):
+            code, tasks = self.client.my_tasks_get(self.org_id)
+        self.assertEqual(code, 200)
+        self.assertIn('exceeded_pools', tasks)
+        self.assertEqual(tasks['exceeded_pools']['count'], 1)
+        self.assertEqual(
+            tasks['exceeded_pools']['count'],
+            len([t for t in tasks.get('exceeded_pools', {}).get('tasks', [])
+                 if t.get('pool_id') == self.sub_pool['id']])
+            if 'tasks' in tasks.get('exceeded_pools', {}) else 1
+        )
+
     def test_get_my_tasks_exceeded_pools_several_expenses(self):
         self.add_expense_records(
             self.org['pool_id'], 96, datetime.datetime(2020, 1, 5))
