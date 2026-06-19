@@ -969,8 +969,8 @@ databases:
 
 # filled from base overlay
 public_ip:
-company_name: Hystax
-product_name: OptScale
+company_name: Tessell
+product_name: FinOps
 
 # helm release name
 release:

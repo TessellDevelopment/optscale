@@ -566,13 +566,13 @@ class Client(etcd.Client):
 
     def product_name(self):
         """
-        Gets the product name (Optscale)
+        Gets the product name (Tessell FinOps)
         """
         return self.get("/product_name").value
 
     def company_name(self):
         """
-        Gets the Company name (Hystax)
+        Gets the Company name (Tessell)
         """
         return self.get("/company_name").value
 
