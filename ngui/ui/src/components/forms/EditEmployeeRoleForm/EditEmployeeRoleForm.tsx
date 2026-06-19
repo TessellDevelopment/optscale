@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
 import DeleteOutlinedIcon from "@mui/icons-material/DeleteOutlined";
 import Box from "@mui/material/Box";
@@ -13,6 +13,7 @@ import { FormattedMessage } from "react-intl";
 import Button from "components/Button";
 import ButtonLoader from "components/ButtonLoader";
 import FormButtonsWrapper from "components/FormButtonsWrapper";
+import { useAllDataSources } from "hooks/coreData/useAllDataSources";
 import { MANAGER, ENGINEER, MEMBER, SCOPE_TYPES } from "utils/constants";
 import { SPACING_1 } from "utils/layouts";
 
@@ -104,6 +105,15 @@ const EditEmployeeRoleForm = ({
   };
 
   const usedPoolIds = poolRoles.map((pr) => pr.poolId).filter((id) => id);
+
+  // Exclude pools auto-created for datasources (matched by name) and sort alphabetically
+  const dataSources = useAllDataSources();
+  const selectablePools = useMemo(() => {
+    const dataSourceNames = new Set(dataSources.map((ds) => ds.name));
+    return [...availablePools]
+      .filter((pool) => !dataSourceNames.has(pool.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [availablePools, dataSources]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -224,7 +234,7 @@ const EditEmployeeRoleForm = ({
                 data-test-id={`select_pool_${index}`}
                 notched
               >
-                {availablePools.map((pool) => (
+                {selectablePools.map((pool) => (
                   <MenuItem
                     key={pool.id}
                     value={pool.id}
