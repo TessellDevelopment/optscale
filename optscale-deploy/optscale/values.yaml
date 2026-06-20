@@ -676,6 +676,21 @@ cleanmongodb:
   archive_enable:
   file_max_rows: 10000
 
+aws_billing_reset:
+  name: aws-billing-reset
+  image:
+    id:
+    repository: aws_billing_reset
+    tag: *tag
+    pullPolicy: Always
+  startingDeadlineSeconds: 300
+  # 02:00 UTC on the 10th of every month — after AWS finalises the prior
+  # month's bill (~5th-8th) but before the next diworker import window.
+  schedule: "0 2 10 * *"
+  # How far back to roll last_import_modified_at (days).
+  # 60 days covers EDP true-ups (≤45 d) and marketplace charges (≤45 d).
+  reset_days: 60
+
 trapper_scheduler:
   name: trapper-scheduler
   replicaCount: 1
