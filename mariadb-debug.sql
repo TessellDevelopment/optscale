@@ -24,8 +24,8 @@ WHERE deleted_at = 0
 -- Check import states
 SELECT state, COUNT(*) FROM reportimport WHERE deleted_at = 0 GROUP BY state;
 
--- Disable auto_import for all cloud accounts
-UPDATE cloudaccount 
+-- Enable auto_import for all real cloud accounts
+UPDATE cloudaccount
 SET auto_import = 1
 WHERE deleted_at = 0 and type in ('aws_cnr', 'gcp_cnr', 'azure_cnr') ;
 
@@ -45,36 +45,23 @@ WHERE deleted_at = 0
 
 
 -- Get all cloud accounts that have not been imported in the last 5 days
-SELECT 
-id,
-name,
-type,
-FROM_UNIXTIME(last_import_modified_at) as last_modified,
-DATEDIFF(NOW(), FROM_UNIXTIME(last_import_modified_at)) as days_gap,
-CASE 
-    WHEN type = 'AWS_CNR' THEN CONCAT(
-        'Will import from ',
-        DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
-        ' to ',
-        CURDATE(),
-        ' (~', 
-        DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
-        ' days)'
-    )
-    WHEN type = 'AZURE_CNR' THEN CONCAT(
-        'Will import from ',
-        DATE_FORMAT(DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY), '%Y-%m-%d'),
-        ' to ',
-        CURDATE(),
-        ' (~',
-        DATEDIFF(CURDATE(), DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)),
-        ' days)'
-    )
-    WHEN type = 'GCP_CNR' THEN 'Will import last_expense_date - 3 days to today'
-END as import_range_description
-FROM cloudaccount 
+SELECT
+    name,
+    type,
+    DATEDIFF(CURDATE(),
+        CASE
+            WHEN last_import_at = 0 OR last_import_modified_at = 0
+                THEN DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 3 MONTH), '%Y-%m-01')
+            WHEN type = 'aws_cnr'
+             AND ((MONTH(FROM_UNIXTIME(last_import_modified_at)) + 1 = MONTH(NOW()) AND YEAR(FROM_UNIXTIME(last_import_modified_at)) = YEAR(NOW()))
+               OR (MONTH(NOW()) = 1 AND YEAR(FROM_UNIXTIME(last_import_modified_at)) + 1 = YEAR(NOW())))
+                THEN DATE_FORMAT(FROM_UNIXTIME(last_import_modified_at), '%Y-%m-01')
+            ELSE DATE_SUB(FROM_UNIXTIME(last_import_modified_at), INTERVAL 5 DAY)
+        END
+    ) AS days_to_import
+FROM cloudaccount
 WHERE deleted_at = 0
-ORDER BY type, last_import_modified_at;
+ORDER BY days_to_import DESC, type, name;
 
 -- Get all cloud accounts
 SELECT id,name,type,auto_import from cloudaccount where deleted_at=0;
@@ -104,7 +91,7 @@ INSERT INTO cloudaccount (
     0,
     'GCP-UNATTACHED (Virtual)',
     'gcp_cnr',
-    '<ENCRYPTED_GCP_CONFIG_FROM_ANY_GCP_DATASOURCE>'
+    '<ENCRYPTED_GCP_CONFIG_FROM_ANY_GCP_DATASOURCE>',
     'f4515e3f-5a6f-47fd-b137-4b8dd783b9bf',
     'GCP-UNATTACHED',
     1,
@@ -117,3 +104,14 @@ INSERT INTO cloudaccount (
     0,
     0
 );
+--- Check all scheduled and progressing datasources for report import
+SELECT
+    ca.name        AS datasource_name,
+    ca.type        AS datasource_type,
+    ri.state       AS import_state
+FROM reportimport ri
+JOIN cloudaccount ca ON ca.id = ri.cloud_account_id
+WHERE ri.deleted_at = 0
+  AND ca.deleted_at = 0
+  AND ri.state IN ('scheduled', 'in_progress')
+ORDER BY ri.state, ca.name;

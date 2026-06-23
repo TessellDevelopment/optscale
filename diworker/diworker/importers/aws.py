@@ -5,16 +5,19 @@ import logging
 import math
 import os
 import re
+import threading
 import pyarrow
 import zipfile
 import json
 from collections import defaultdict, OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 
 from diworker.diworker.importers.base import (
     CSVBaseReportImporter, CSV_REWRITE_DAYS
 )
+from diworker.diworker.utils import retry_mongo_operation
 from diworker.diworker.cache.aws_report_cache import AWSReportCache
 import tools.optscale_time as opttime
 import pyarrow.parquet as pq
@@ -27,6 +30,22 @@ DEFAULT_CHUNK_SIZE = 500  # Optimized for speed now that memory is under control
 CHUNK_SIZE = int(os.environ.get('AWS_CSV_CHUNK_SIZE', DEFAULT_CHUNK_SIZE))
 # Configurable batch size for Parquet processing
 AWS_REPORT_BATCH_SIZE = int(os.environ.get('AWS_REPORT_BATCH_SIZE', 2000))
+# Batch size for the cloud_resource_create_bulk REST call inside the bulk
+# clean-records flow.  The server has fixed per-call overhead
+# (cloud_account_map, employee_allowed_pools, rules setup, etc.), so larger
+# batches mean fewer round-trips. Tornado's default request limit is 100 MB
+# and a 2000-resource payload tops out around 5-8 MB worst case.
+RESOURCE_CREATE_REST_BATCH = int(
+    os.environ.get('AWS_RESOURCE_CREATE_REST_BATCH', 2000))
+# Number of CSV/Parquet report files to load in parallel within a single
+# import run.  Each worker reads a different file and bulk-writes kept rows
+# to MongoDB independently. Set to 1 to disable parallelism.
+CSV_LOAD_WORKERS = int(os.environ.get('AWS_CSV_LOAD_WORKERS', 4))
+# AWS Reserved Instances have a maximum term of 3 years. RIFee rows are
+# anchored to the billing period of the RI purchase but updated daily for the
+# full term. The date guard must not skip periods that fall within this window
+# even if their end-date predates min_date_import_threshold.
+RI_MAX_TERM_DAYS = 3 * 366  # 3 years, generous for leap-year safety
 IGNORE_EXPENSE_TYPES = ['Credit']
 RI_PLATFORMS = [
     'Linux/UNIX',
@@ -95,6 +114,11 @@ class AWSReportImporter(CSVBaseReportImporter):
         self._legacy_column_cache = {}
         # Map of file paths to their cache keys for symlink lookup
         self._file_cache_keys = {}
+        # Lock protecting imported_raw_dates_map during parallel file loading
+        self._raw_interval_lock = threading.Lock()
+        # Thread-local storage so each parallel file-loading worker keeps its
+        # own fadvise fd rather than sharing the instance attribute.
+        self._tls = threading.local()
 
     @property
     def report_cache(self):
@@ -486,19 +510,65 @@ class AWSReportImporter(CSVBaseReportImporter):
     def get_current_reports(self, reports_groups, last_import_modified_at):
         current_reports = defaultdict(list)
         reports_count = 0
+        skipped_old_periods = 0
         # during first report in the current month download all reports
         # from the previous month to do full reimport
         if self._is_first_import_in_month(last_import_modified_at):
             last_import_modified_at = opttime.startmonth(
                 last_import_modified_at)
+        # RIFee rows live in the billing period of the RI purchase, which can
+        # be up to 3 years old, but they are updated daily for the full term.
+        # The date guard must not skip any period that is still inside the
+        # maximum RI term window, even if its end-date predates
+        # min_date_import_threshold.
+        ri_fee_cutoff = (self.min_date_import_threshold
+                         - timedelta(days=RI_MAX_TERM_DAYS))
         for date, reports in reports_groups.items():
+            # Guard: skip billing periods whose end date is entirely before
+            # min_date_import_threshold AND before the RI-fee safety window.
+            # An S3 file modified recently (e.g. due to a retroactive credit)
+            # can make a year-old period pass the LastModified check below,
+            # but its rows would all be discarded anyway — unless they are
+            # RIFee rows from a live reservation.
+            #
+            # date format: "YYYYMMDD-YYYYMMDD" (period_start-period_end)
+            try:
+                period_end_str = date.split('-')[1]  # e.g. "20250201"
+                period_end = datetime.strptime(
+                    period_end_str, '%Y%m%d').replace(tzinfo=timezone.utc)
+                if period_end < self.min_date_import_threshold:
+                    if period_end < ri_fee_cutoff:
+                        # Period is older than the longest possible RI term;
+                        # no live RIFee can reference it any more.
+                        skipped_old_periods += 1
+                        LOG.debug(
+                            'Skipping billing period %s: period end %s is '
+                            'before ri_fee_cutoff %s',
+                            date, period_end.date(), ri_fee_cutoff.date())
+                        continue
+                    # Period is old enough to be past min_date_import_threshold
+                    # but still within the RI term window — let it through so
+                    # any active RIFee rows are not missed.
+                    LOG.debug(
+                        'Billing period %s is past min_date_import_threshold '
+                        'but within RI term window; not skipping', date)
+            except (IndexError, ValueError):
+                # Unparseable date key — fall through to the normal check so
+                # we never silently drop a period we can't classify.
+                LOG.warning(
+                    'Could not parse billing period date key %r — '
+                    'skipping period-end guard for this entry', date)
+
             for report in reports:
                 if report.get('LastModified', -1) > last_import_modified_at:
                     # use all reports for month
                     current_reports[date].extend(reports)
                     reports_count += len(reports)
                     break
-        LOG.info('Selected %s reports', reports_count)
+        LOG.info(
+            'Selected %s reports across %s billing period(s) '
+            '(%s old period(s) skipped by date guard)',
+            reports_count, len(current_reports), skipped_old_periods)
         return current_reports
 
     @cached_property
@@ -538,27 +608,50 @@ class AWSReportImporter(CSVBaseReportImporter):
         for r in self.report_files.values():
             report_files.extend(r)
 
-        # Track skipped files for reporting
+        n_files = len(report_files)
+        workers = min(CSV_LOAD_WORKERS, n_files) if n_files > 1 else 1
+        LOG.info('Loading %s report file(s) with %s parallel worker(s)',
+                 n_files, workers)
+
         skipped_files = []
         successful_files = []
 
-        for report_path in report_files:
+        def _load_one(report_path):
             try:
                 self.load_report(report_path, account_id_ca_id_map)
-                successful_files.append(report_path)
-            except Exception as e:
-                # Log error but continue processing other files
-                LOG.error(f"Failed to load report {report_path}: {e}", exc_info=True)
-                skipped_files.append((report_path, str(e)))
+                return True, report_path, None
+            except Exception as exc:
+                LOG.error('Failed to load report %s: %s',
+                          report_path, exc, exc_info=True)
+                return False, report_path, str(exc)
 
-        # Log summary
+        if workers == 1:
+            # Serial path — no threading overhead for single-file imports
+            for report_path in report_files:
+                ok, path, err = _load_one(report_path)
+                (successful_files if ok else skipped_files).append(
+                    path if ok else (path, err))
+        else:
+            # Parallel path: each worker loads a different file and writes
+            # its kept rows to MongoDB independently.  Shared state
+            # (imported_raw_dates_map, billing_periods,
+            # detected_cloud_accounts) is protected by _raw_interval_lock
+            # or is GIL-safe (set.add in CPython).
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_load_one, p): p for p in report_files}
+                for fut in as_completed(futures):
+                    ok, path, err = fut.result()
+                    (successful_files if ok else skipped_files).append(
+                        path if ok else (path, err))
+
         if skipped_files:
-            LOG.warning(f"Skipped {len(skipped_files)} report file(s) out of {len(report_files)} total")
-            for path, error in skipped_files:
-                LOG.warning(f"  - {path}: {error}")
+            LOG.warning('Skipped %s/%s report file(s)',
+                        len(skipped_files), n_files)
+            for path, err in skipped_files:
+                LOG.warning('  %s: %s', path, err)
 
-        LOG.info(f"Successfully processed {len(successful_files)} report file(s)")
-
+        LOG.info('Successfully loaded %s/%s report file(s)',
+                 len(successful_files), n_files)
         self.clear_rudiments()
 
     def _log_memory_usage(self, context=""):
@@ -673,47 +766,46 @@ class AWSReportImporter(CSVBaseReportImporter):
                         'incorrectly or they are not marked as linked',
                         skipped_accounts)
 
-    def update_raw_records(self, chunk):
-        """
-        Override to add aggressive memory management.
-        MongoDB bulk operations hold massive buffers - must be cleaned immediately.
-        """
-        for row in chunk:
-            # TODO: OS-5444
-            # pymongo InsertOne fails on '.' in key, while UpdateOne splits
-            # key by dot and saves as dict, ex.:
-            #     {"resourceTags/user:test.dot": 1} ->
-            #         {"resourceTags/user:test": {"dot": 1}}
-            def split_dot_keys(key, value):
-                result = {key: value}
-                if '.' in key:
-                    result.pop(key)
-                    parts = key.split('.', 1)
-                    result[parts[0]] = split_dot_keys(parts[1], value)
-                    return result
-                return result
+    @staticmethod
+    def _split_dot_keys(key, value):
+        """Recursively convert a dot-separated tag key into a nested dict.
 
-            tags = {k: v for k, v in row.items() if
-                    k.startswith('resourceTags')}
+        pymongo's UpdateOne stores dot-separated keys as nested documents
+        (e.g. resourceTags/user:app.version → {resourceTags/user:app: {version: …}})
+        which is the intended behaviour for tag storage.
+
+        Defined as a static method (not inside the per-row loop) to avoid
+        allocating a new function object on every row iteration.
+        """
+        result = {key: value}
+        if '.' in key:
+            result.pop(key)
+            head, tail = key.split('.', 1)
+            result[head] = AWSReportImporter._split_dot_keys(tail, value)
+        return result
+
+    def _update_imported_raw_interval(self, expense):
+        """Thread-safe override: protects imported_raw_dates_map during
+        parallel file loading so concurrent workers do not corrupt the
+        per-account min/max date tracking."""
+        with self._raw_interval_lock:
+            super()._update_imported_raw_interval(expense)
+
+    def update_raw_records(self, chunk):
+        for row in chunk:
+            # TODO: OS-5444 — UpdateOne splits dot-keys into nested dicts
+            tags = {k: v for k, v in row.items() if k.startswith('resourceTags')}
             for k, v in tags.items():
                 row.pop(k)
-                row.update(split_dot_keys(k, v))
+                row.update(self._split_dot_keys(k, v))
             row['report_identity'] = self.report_identity
 
-        # Write to MongoDB
         super().update_raw_records(chunk)
-
-        # CRITICAL: Force MongoDB driver to flush buffers and release memory
-        # The bulk_write operation leaves results and buffers in memory
-        # We must explicitly clean up after EVERY write for large CSV files
-        try:
-            # Force connection to flush any pending operations
-            self.mongo_raw.database.client.admin.command('ping')
-        except Exception:
-            pass  # Ignore ping errors, just trying to flush
-
-        # Explicit garbage collection to clean MongoDB driver objects
-        gc.collect(generation=0)
+        # NOTE: removed admin.command('ping') — bulk_write with w=1 write
+        # concern already blocks until MongoDB acknowledges; the ping was a
+        # no-op that added one round-trip per chunk (≈40 000 extra round-trips
+        # per large import run).  GC is handled at the file level in
+        # load_report() rather than after every 500-row write.
 
     @staticmethod
     def _is_flavor_usage(expense):
@@ -872,40 +964,135 @@ class AWSReportImporter(CSVBaseReportImporter):
                 # Tell kernel this is sequential access (universally supported)
                 os_module.posix_fadvise(fd_for_fadvise, 0, 0, POSIX_FADV_SEQUENTIAL)
 
-                # Store the duplicated fd for later cache drops
-                self._csv_fd_for_fadvise = fd_for_fadvise
-                self._csv_filepath_for_fadvise = actual_file_path
+                # Store in thread-local so parallel workers each track their
+                # own fd without overwriting each other on the instance.
+                self._tls.csv_fd = fd_for_fadvise
+                self._tls.csv_filepath = actual_file_path
 
                 LOG.debug(f"Successfully set SEQUENTIAL hint for {actual_file_path}")
             except (AttributeError, OSError) as e:
                 LOG.warning(f"Could not set file cache hints for {actual_file_path}: {e}")
                 if fd_for_fadvise:
                     os_module.close(fd_for_fadvise)
-                self._csv_fd_for_fadvise = None
+                self._tls.csv_fd = None
         else:
-            self._csv_fd_for_fadvise = None
+            self._tls.csv_fd = None
 
         # Create file object from original fd (fdopen takes ownership and will close it)
         csvfile = os_module.fdopen(fd, mode='r', buffering=BUFFER_SIZE, newline='')
 
         with csvfile:
-            reader = csv.DictReader(csvfile)
-
-            # Handle case where fieldnames is None (empty file, should have been caught by validation)
-            if reader.fieldnames is None:
-                LOG.error(f"CSV reader fieldnames is None for {report_path} - file may be empty or corrupted")
+            # Use csv.reader (returns lists) instead of csv.DictReader so we
+            # can check the linked-account ID by column index and skip
+            # unconfigured-account rows BEFORE paying the per-row dict
+            # construction cost. Master-payer CURs typically contain rows for
+            # dozens of linked accounts but only a few are configured here.
+            raw_reader = csv.reader(csvfile)
+            try:
+                raw_fieldnames = next(raw_reader)
+            except StopIteration:
+                LOG.error(
+                    'CSV file %s appears to be empty (no header row)',
+                    report_path)
                 return billing_period, skipped_accounts
 
-            reader.fieldnames = self._convert_to_legacy_csv_columns(
-                reader.fieldnames)
+            fieldnames = self._convert_to_legacy_csv_columns(raw_fieldnames)
+            n_fields = len(fieldnames)
+
+            # Resolve column indices used by the early skip-check. If the
+            # account-id column is not present as a direct top-level column
+            # (non-standard CUR formats where it is JSON-nested inside a
+            # prefix column), account_id_idx stays -1 and we fall back to
+            # building the dict before the skip-check, preserving the
+            # original behaviour.
+            try:
+                account_id_idx = fieldnames.index('lineItem/UsageAccountId')
+            except ValueError:
+                account_id_idx = -1
+
+            if account_id_idx >= 0:
+                LOG.info(
+                    'CSV %s: fast-path skip enabled '
+                    '(account_id_idx=%s, fields=%s)',
+                    report_path, account_id_idx, n_fields)
+            else:
+                # Non-standard format — log so it can be investigated. The
+                # fallback path still produces correct results but is slower.
+                LOG.warning(
+                    "CSV %s: 'lineItem/UsageAccountId' is not a top-level "
+                    "column; using fallback path (slower). "
+                    "first_5_fields=%s total_fields=%s",
+                    report_path, fieldnames[:5], n_fields)
+
+            # Per-file diagnostic counters. Kept cheap (only integer increments
+            # inside the hot loop) so they can be enabled in production logs.
+            n_scanned = 0
+            n_skipped_early = 0
+            n_skipped_empty_account = 0
+            n_short_rows = 0
+            short_row_sample_logged = False
+
+            def _build_row(values):
+                # Match csv.DictReader semantics: rows with fewer values than
+                # fieldnames get None for missing keys.
+                row = dict(zip(fieldnames, values))
+                if len(values) < n_fields:
+                    for k in fieldnames[len(values):]:
+                        row[k] = None
+                return row
+
             chunk = []
             record_number = 0
-            for row in reader:
-                row = self._extract_nested_objects(row)
+            for row_values in raw_reader:
+                n_scanned += 1
+
+                row_len = len(row_values)
+                if row_len < n_fields:
+                    n_short_rows += 1
+                    if not short_row_sample_logged:
+                        # Log once per file to flag malformed rows without
+                        # spamming the log when many are present.
+                        LOG.warning(
+                            'CSV %s: row %s has %s values but header has %s '
+                            'fields; missing fields will be filled with None '
+                            '(further short-row warnings suppressed for this '
+                            'file)',
+                            report_path, n_scanned, row_len, n_fields)
+                        short_row_sample_logged = True
+
+                if account_id_idx >= 0:
+                    # Fast path: peek at the account ID without building the
+                    # full dict for rows that will be discarded anyway.
+                    account_id = (row_values[account_id_idx]
+                                  if account_id_idx < row_len else '')
+                    cloud_account_id = account_id_ca_id_map.get(account_id)
+                    if cloud_account_id is None:
+                        n_skipped_early += 1
+                        if not account_id:
+                            n_skipped_empty_account += 1
+                        skipped_accounts.add(account_id)
+                        continue
+                    row = _build_row(row_values)
+                    row = self._extract_nested_objects(row)
+                else:
+                    # Fallback path for non-standard formats where the
+                    # account ID lives inside a JSON-nested prefix column.
+                    row = _build_row(row_values)
+                    row = self._extract_nested_objects(row)
+                    fallback_account_id = row.get('lineItem/UsageAccountId')
+                    cloud_account_id = account_id_ca_id_map.get(
+                        fallback_account_id)
+                    if cloud_account_id is None:
+                        n_skipped_early += 1
+                        if not fallback_account_id:
+                            n_skipped_empty_account += 1
+                        skipped_accounts.add(fallback_account_id or '')
+                        continue
+
                 if billing_period is None:
-                    billing_period = row['bill/BillingPeriodStartDate']
-                    LOG.info('detected billing period: %s', billing_period)
-                    self.current_billing_period = billing_period
+                    billing_period = row.get('bill/BillingPeriodStartDate')
+                    if billing_period:
+                        LOG.info('detected billing period: %s', billing_period)
 
                 if len(chunk) >= CHUNK_SIZE:
                     self.update_raw_records(chunk)
@@ -922,12 +1109,12 @@ class AWSReportImporter(CSVBaseReportImporter):
                     # Drop file cache periodically to prevent OOM
                     # With memory stable at ~1GB, we can drop less frequently for better performance
                     # Drop every 10000 rows (~400MB) to minimize syscall overhead
-                    if hasattr(self, '_csv_fd_for_fadvise') and self._csv_fd_for_fadvise and record_number % 10000 == 0:
+                    _fadvise_fd = getattr(self._tls, 'csv_fd', None)
+                    if _fadvise_fd and record_number % 10000 == 0:
                         try:
                             POSIX_FADV_DONTNEED = 4
                             import os as os_module
-                            # Drop pages from 0 to current position
-                            os_module.posix_fadvise(self._csv_fd_for_fadvise, 0, 0, POSIX_FADV_DONTNEED)
+                            os_module.posix_fadvise(_fadvise_fd, 0, 0, POSIX_FADV_DONTNEED)
                             LOG.debug(f"Dropped cache at row {record_number}")
                         except Exception as e:
                             LOG.warning(f"Failed to drop cache at row {record_number}: {e}")
@@ -937,12 +1124,6 @@ class AWSReportImporter(CSVBaseReportImporter):
                         LOG.info('report %s: processed %s rows',
                                  report_path, record_number)
                         date_start = now
-
-                cloud_account_id = account_id_ca_id_map.get(
-                    row['lineItem/UsageAccountId'])
-                if cloud_account_id is None:
-                    skipped_accounts.add(row['lineItem/UsageAccountId'])
-                    continue
 
                 self.detected_cloud_accounts.add(cloud_account_id)
                 record_number += 1
@@ -989,30 +1170,44 @@ class AWSReportImporter(CSVBaseReportImporter):
 
         # CRITICAL: Drop entire file from cache after processing to prevent OOM
         # This releases 1.2GB of file cache immediately
-        if hasattr(self, '_csv_fd_for_fadvise') and self._csv_fd_for_fadvise:
+        _fadvise_fd = getattr(self._tls, 'csv_fd', None)
+        if _fadvise_fd:
             try:
                 import os as os_module
                 POSIX_FADV_DONTNEED = 4
-                # Tell kernel to drop ALL cached pages for this file
-                os_module.posix_fadvise(self._csv_fd_for_fadvise, 0, 0, POSIX_FADV_DONTNEED)
-                filepath = getattr(self, '_csv_filepath_for_fadvise', report_path)
+                os_module.posix_fadvise(_fadvise_fd, 0, 0, POSIX_FADV_DONTNEED)
+                filepath = getattr(self._tls, 'csv_filepath', report_path)
                 LOG.info(f"Dropped file cache for {filepath}")
             except Exception as e:
                 LOG.warning(f"Could not drop file cache for {report_path}: {e}")
             finally:
-                # CRITICAL: Close the duplicated fd to avoid fd leak
-                if self._csv_fd_for_fadvise:
-                    try:
-                        import os as os_module
-                        os_module.close(self._csv_fd_for_fadvise)
-                    except Exception:
-                        pass  # Ignore close errors
-                self._csv_fd_for_fadvise = None
+                try:
+                    import os as os_module
+                    os_module.close(_fadvise_fd)
+                except Exception:
+                    pass
+                self._tls.csv_fd = None
 
         # Final aggressive cleanup after processing CSV file
         # Full collection to clean up all generations
         gc.collect(generation=2)  # Full collection including old objects
         gc.collect(generation=2)  # Second pass for circular references
+
+        # Per-file scan summary. Useful for verifying the early skip-check
+        # optimisation and diagnosing files with malformed rows or unexpected
+        # account distributions.
+        if n_scanned == 0:
+            LOG.warning(
+                'CSV %s: header read but no data rows present', report_path)
+        else:
+            skip_pct = (n_skipped_early * 100.0) / n_scanned
+            LOG.info(
+                'CSV %s scan summary: scanned=%s kept=%s skipped_early=%s '
+                '(%.1f%%) empty_account_id=%s short_rows=%s '
+                'unique_skipped_accounts=%s',
+                report_path, n_scanned, record_number, n_skipped_early,
+                skip_pct, n_skipped_empty_account, n_short_rows,
+                len(skipped_accounts))
         return billing_period, skipped_accounts
 
     def load_parquet_report(self, report_path, account_id_ca_id_map,
@@ -1061,7 +1256,6 @@ class AWSReportImporter(CSVBaseReportImporter):
                             billing_period is None):
                         billing_period = value
                         LOG.info('detected billing period: %s', billing_period)
-                        self.current_billing_period = billing_period
                     elif field_name == 'lineItem/UsageAccountId':
                         cloud_account_id = account_id_ca_id_map.get(value)
                         if cloud_account_id is None:
@@ -1473,6 +1667,7 @@ class AWSReportImporter(CSVBaseReportImporter):
         }
         return day_group_pipeline
 
+    @retry_mongo_operation
     def get_resource_ids(self, cloud_account_id, billing_period):
         filters = {
             'cloud_account_id': cloud_account_id,
@@ -1487,8 +1682,11 @@ class AWSReportImporter(CSVBaseReportImporter):
         ], allowDiskUse=True)
         return [x['_id'] for x in resource_ids]
 
+    @retry_mongo_operation
     def get_raw_expenses_by_filters(self, filters):
-        return self.mongo_raw.aggregate([
+        # Cursor is fully consumed here so the entire network round-trip
+        # (aggregate command + batch fetches) is within the retry boundary.
+        return list(self.mongo_raw.aggregate([
                 {'$match': {
                     '$and': filters,
                 }},
@@ -1497,7 +1695,135 @@ class AWSReportImporter(CSVBaseReportImporter):
                     '$mergeObjects': ["$root", "$$ROOT"]}
                 }},
                 {'$project': {"root": 0}}
-            ], allowDiskUse=True)
+            ], allowDiskUse=True))
+
+    @retry_mongo_operation
+    def _get_all_raw_expenses_for_clean(self, cloud_account_id, period_start):
+        """
+        Fetch all day-grouped raw expenses for one (account, billing_period)
+        in a single aggregate pass.
+
+        Replaces the N per-chunk calls to get_raw_expenses_by_filters made by
+        the base _generate_clean_records loop.  The pipeline is identical to
+        get_raw_expenses_by_filters except there is no resource_id $in filter,
+        so MongoDB scans the collection once instead of N times.
+        """
+        filters = [
+            {'cloud_account_id': cloud_account_id},
+            self._get_billing_period_filters(period_start),
+            {'resource_id': {'$exists': True, '$ne': None}},
+        ]
+        return list(self.mongo_raw.aggregate([
+            {'$match': {'$and': filters}},
+            {'$group': self._get_group_by_day_pipeline()},
+            {'$replaceRoot': {'newRoot': {
+                '$mergeObjects': ['$root', '$$ROOT']}}},
+            {'$project': {'root': 0}},
+        ], allowDiskUse=True))
+
+    def _generate_clean_records(self, resource_ids, cloud_account_id,
+                                period_start):
+        """
+        AWS override: fully bulk single-pass.
+
+        I/O round-trips per (account, billing_period) call:
+          Before (pre-optimisation, N = R/CHUNK_SIZE chunks):
+            1 get_resource_ids
+            + N  get_raw_expenses_by_filters (Mongo $group)
+            + N  cloud_resource_create_bulk (REST)
+            + N  get_clickhouse_expenses
+            + N  update_clickhouse_expenses
+            + N  get_common_resource_expense_info
+            + N  mongo_resources.bulk_write
+          After:
+            1 _get_all_raw_expenses_for_clean
+            + K  cloud_resource_create_bulk where K = ceil(R / REST_BATCH)
+            + 1  get_clickhouse_expenses
+            + 1  update_clickhouse_expenses
+            + 1  get_common_resource_expense_info
+            + 1  mongo_resources.bulk_write
+        """
+        resource_count = len(resource_ids)
+        LOG.info(
+            'Generating clean expenses for %s resources in account %s '
+            '(billing_period=%s, fully bulk)',
+            resource_count, cloud_account_id, period_start)
+
+        # 1. One Mongo aggregate for the whole (account, billing_period)
+        all_expenses = self._get_all_raw_expenses_for_clean(
+            cloud_account_id, period_start)
+
+        by_resource = defaultdict(list)
+        for exp in all_expenses:
+            by_resource[exp['resource_id']].append(exp)
+
+        if not by_resource:
+            LOG.info('No raw expenses found for this billing period')
+            return
+
+        total = len(by_resource)
+        LOG.info('Single-pass aggregate returned %s unique resources '
+                 '(%s day-grouped rows)', total, len(all_expenses))
+        del all_expenses
+
+        # 2. Resolve every resource_id → resource doc in K REST calls
+        #    (K ≈ R/RESOURCE_CREATE_REST_BATCH, vs N before). The per-call
+        #    fixed server-side overhead is what we're collapsing here.
+        info_map = self.get_resource_info_map(by_resource)
+        resources_map = self._bulk_resolve_resources(
+            cloud_account_id, info_map)
+
+        # 3. Single Python compute pass
+        clean_expenses = []
+        last_expense_info = {}
+        for r_id, expenses in by_resource.items():
+            resource = resources_map.get(r_id)
+            if not resource:
+                LOG.warning(
+                    'Resource %s missing from resources_map; skipping '
+                    'clean expense generation for it', r_id)
+                continue
+            resource_id = resource['id']
+            clean_expenses_map = self.clean_expenses_for_resource(
+                resource_id, expenses)
+            if not clean_expenses_map:
+                continue
+            max_resource_date = max(clean_expenses_map.keys())
+            last_expense_info[resource_id] = (
+                max_resource_date,
+                clean_expenses_map[max_resource_date]['cost'])
+            clean_expenses.extend(clean_expenses_map.values())
+
+        # 4. One ClickHouse read + diff + insert + one Mongo resources flush
+        self._apply_bulk_clickhouse_diff(
+            cloud_account_id, clean_expenses, last_expense_info)
+
+        LOG.info('Finished generating clean expenses for %s resources',
+                 resource_count)
+
+    def _bulk_resolve_resources(self, cloud_account_id, info_map):
+        """
+        Run cloud_resource_create_bulk in larger batches than CHUNK_SIZE so
+        the per-call REST overhead (cloud_account_map fetch, allowed-pools
+        query, rules setup, etc.) is amortised across more resources.
+        """
+        resources_map = {}
+        info_items = list(info_map.items())
+        total = len(info_items)
+        if not total:
+            return resources_map
+        n_batches = -(-total // RESOURCE_CREATE_REST_BATCH)
+        for i in range(0, total, RESOURCE_CREATE_REST_BATCH):
+            batch = dict(info_items[i:i + RESOURCE_CREATE_REST_BATCH])
+            for r in self.create_resources_if_not_exist(
+                    cloud_account_id, batch,
+                    unique_id_field='cloud_resource_id'):
+                resources_map[r['cloud_resource_id']] = r
+        LOG.info(
+            'Resolved %s resource records via %s bulk REST call(s) '
+            '(batch=%s)',
+            len(resources_map), n_batches, RESOURCE_CREATE_REST_BATCH)
+        return resources_map
 
     def _get_billing_period_filters(self, billing_period):
         return {

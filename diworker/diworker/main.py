@@ -2,6 +2,18 @@
 import os
 import time
 import logging
+import warnings
+
+# botocore 1.34.x calls datetime.datetime.utcnow() which Python 3.12
+# marks as deprecated. The warning is cosmetic noise — botocore's behaviour
+# is correct. Suppress it until we upgrade to boto3>=1.35 where the fix
+# is included (https://github.com/boto/botocore/issues/2982).
+warnings.filterwarnings(
+    'ignore',
+    message=r'datetime\.datetime\.utcnow\(\)',
+    category=DeprecationWarning,
+    module='botocore',
+)
 
 import urllib3
 from concurrent.futures import ThreadPoolExecutor

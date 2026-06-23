@@ -42,11 +42,11 @@ class GcpReportImporter(BaseReportImporter):
             'resource_hash',
             'cloud_account_id',
             'sku',
-            'service'
+            'service',
         ]
 
     def get_update_fields(self):
-        return ['cost', 'usage_amount', 'usage_amount_in_pricing_units', 'credits']
+        return ['cost', 'usage_amount', 'usage_amount_in_pricing_units', 'credits', 'original_cost']
 
     def _get_resource_region(self, region_data):
         """Gcp provides location info in format:
@@ -95,7 +95,8 @@ class GcpReportImporter(BaseReportImporter):
         # which are usually negative, to cost values.
         # original value of the cost field is stored for visibility.
         row_dict['original_cost'] = row_dict['cost']
-        row_dict['cost'] += sum(credit['amount'] for credit in row_dict['credits'])
+        credits_sum = sum(credit['amount'] for credit in row_dict['credits'])
+        row_dict['cost'] += credits_sum
 
     def _row_to_dict(self, row):
         row_dict = dict(row.items())
@@ -152,31 +153,42 @@ class GcpReportImporter(BaseReportImporter):
                 for field in update_fields:
                     value = item.get(field)
                     if value:
-                        common_item[field] += value
+                        # Special handling for credits array - extend instead of add
+                        if field == 'credits' and isinstance(value, list):
+                            if not isinstance(common_item[field], list):
+                                common_item[field] = []
+                            common_item[field].extend(value)
+                        else:
+                            common_item[field] += value
             b_item_map[k] = [common_item]
-        updated_billing_items = [v[0] for v in b_item_map.values()]
-        return updated_billing_items
+
+        return [v[0] for v in b_item_map.values()]
 
     def load_raw_data(self):
         current_day = self.period_start.replace(
             hour=0, minute=0, second=0, microsecond=0)
         now = opttime.utcnow()
+        # GCP distributes costs for the same billing key (usage_start_time +
+        # sku + region + labels) across multiple _PARTITIONTIME days as
+        # additive partial amounts. Collecting all partition days first and
+        # merging across them in one pass produces the correct aggregate per
+        # key, which then overwrites the existing MongoDB document via $set —
+        # no duplicate records, no stale partial costs.
+        all_rows = []
         while current_day <= now:
-            chunk = []
             end_date = current_day + timedelta(days=1)
-            # sometimes Gcp splits the same expenses for a date into
-            # several bills, so merge them into one
-            usage_rows = self.cloud_adapter.get_usage(current_day, end_date)
-            usage_rows = [self._row_to_dict(r) for r in usage_rows]
-            usage_rows = self._merge_same_billing_items(usage_rows)
-            for r in usage_rows:
-                chunk.append(r)
-                if len(chunk) == WRITE_CHUNK_SIZE:
-                    self.update_raw_records(chunk)
-                    chunk = []
-            if chunk:
-                self.update_raw_records(chunk)
+            for r in self.cloud_adapter.get_usage(current_day, end_date):
+                all_rows.append(self._row_to_dict(r))
             current_day = end_date
+
+        chunk = []
+        for r in self._merge_same_billing_items(all_rows):
+            chunk.append(r)
+            if len(chunk) == WRITE_CHUNK_SIZE:
+                self.update_raw_records(chunk)
+                chunk = []
+        if chunk:
+            self.update_raw_records(chunk)
 
     @staticmethod
     def _get_resource_type_and_name(expense):
@@ -279,14 +291,11 @@ class GcpReportImporter(BaseReportImporter):
                     if new_progress != progress:
                         progress = new_progress
                         LOG.info('Progress: %s', progress)
-
                     filters = base_filters + [{unique_id_field: {
                         '$in': resources_unique_ids[i:i + READ_CHUNK_SIZE]
                     }}]
                     expenses = self.mongo_raw.aggregate([
-                        {'$match': {
-                            '$and': filters,
-                        }},
+                        {'$match': {'$and': filters}},
                     ], allowDiskUse=True)
                     chunk = defaultdict(list)
                     for e in expenses:
