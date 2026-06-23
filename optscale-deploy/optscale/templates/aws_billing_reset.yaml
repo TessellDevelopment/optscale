@@ -38,10 +38,19 @@ spec:
             env:
             - name: IMAGE_ID
               value: {{ $config.image.id }}
-            - name: HX_ETCD_HOST
-              value: {{ .Values.etcd.service.name }}
-            - name: HX_ETCD_PORT
-              value: {{ .Values.etcd.service.externalPort | quote }}
+            - name: DB_HOST
+              value: {{ .Values.mariadb.service.name }}
+            - name: DB_PORT
+              value: {{ .Values.mariadb.service.externalPort | quote }}
+            - name: DB_USER
+              value: {{ .Values.mariadb.credentials.username }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: password
+            - name: DB_NAME
+              value: "my-db"
             - name: AWS_BILLING_RESET_DAYS
               value: {{ $config.reset_days | quote }}
           restartPolicy: Never

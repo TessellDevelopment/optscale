@@ -1,12 +1,11 @@
-FROM python:3.12.11-slim
-LABEL org.opencontainers.image.authors="Hystax"
+FROM debian:bookworm-slim
+LABEL org.opencontainers.image.authors="Tessell Finops"
 
-WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends mariadb-client \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY optscale_client/config_client optscale_client/config_client
-COPY docker_images/aws_billing_reset/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY docker_images/aws_billing_reset/aws-billing-reset.sh /usr/local/bin/aws-billing-reset.sh
+RUN chmod +x /usr/local/bin/aws-billing-reset.sh
 
-COPY docker_images/aws_billing_reset/aws-billing-reset.py .
-
-CMD ["python", "/src/aws-billing-reset.py"]
+CMD ["/usr/local/bin/aws-billing-reset.sh"]
