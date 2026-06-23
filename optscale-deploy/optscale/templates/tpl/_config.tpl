@@ -213,6 +213,10 @@ etcd:
     rows_limit: {{ .Values.cleanmongodb.rows_limit }}
     archive_enable: {{ .Values.cleanmongodb.archive_enable }}
     file_max_rows: {{ .Values.cleanmongodb.file_max_rows }}
+    compact_after_purge: {{ .Values.cleanmongodb.compact_after_purge }}
+    compact_cycle_size: {{ .Values.cleanmongodb.compact_cycle_size }}
+    raw_expenses_ttl_days: {{ .Values.cleanmongodb.raw_expenses_ttl_days }}
+    max_runtime_secs: {{ .Values.cleanmongodb.max_runtime_secs }}
   disable_email_verification: {{ .Values.disable_email_verification }}
   force_aws_edp_strip: {{ .Values.force_aws_edp_strip }}
   encryption_salt: {{ .Values.encryption_salt }}

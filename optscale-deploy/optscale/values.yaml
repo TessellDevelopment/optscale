@@ -670,11 +670,67 @@ cleanmongodb:
     tag: *tag
     pullPolicy: Always
   startingDeadlineSeconds: 100
-  schedule: "*/3 * * * *"
+  schedule: "0 3 * * 0"  # 3 AM UTC every Sunday
   chunk_size: 500
-  rows_limit: 10000
+  rows_limit: 500000  # weekly run — process up to 500k old docs before compact
   archive_enable:
   file_max_rows: 10000
+  # compact_after_purge: after deleting old raw_expenses, run MongoDB compact
+  # to physically rewrite WiredTiger data files and return PVC space to the OS.
+  # compact briefly blocks reads/writes on the collection — enable only during
+  # a scheduled low-traffic window (the job schedule above controls timing).
+  compact_after_purge: true
+  # Documents deleted per delete+compact cycle.  With rows_limit/cycle_size
+  # cycles per run, space is reclaimed incrementally instead of in one large
+  # compact at the end — so deadline interruptions never leave the collection
+  # bloated.  Smaller = more frequent (shorter) compacts; larger = fewer total
+  # compacts but more peak fragmentation between them.
+  compact_cycle_size: 50000
+  # Delete raw_expenses older than this many days.  6 months = 180 days.
+  # Set to 0 to disable time-based TTL purge entirely.
+  raw_expenses_ttl_days: 180
+  max_runtime_secs: 21600  # 6 hours; job stops cleanly, never aborts mid-batch
+
+# Maintenance window guards the cleanmongodb run from concurrent MongoDB
+# traffic.  When enabled, two CronJobs suspend the report-import-scheduler
+# CronJobs and scale diworker to 0 for the duration of the window, and
+# restore both at the end.  The window is fixed-time, not state-based.
+#
+# Default window (UTC):
+#   02:00  start  — schedulers suspended, diworker scaled to 0
+#   03:00  cleanmongodb starts (existing schedule "0 3 * * 0")
+#   09:00  cleanmongodb deadline reached (max_runtime_secs)
+#   10:00  end    — schedulers unsuspended, diworker restored to replicaCount
+# Pre-buffer (02:00–03:00) gives in-flight pods 1h before deletion starts.
+# Post-buffer (09:00–10:00) absorbs compact overruns.
+#
+# diworker pods scale to 0 abruptly — in-flight imports are killed and
+# their RabbitMQ messages stay unacked, so they are redelivered when
+# pods come back up at 10:00 UTC.  Imports are idempotent (upsert).
+maintenance_window:
+  name: maintenance-window
+  enable: false  # opt-in per environment via user_config.yml
+  start_schedule: "0 2 * * 0"   # Sunday 02:00 UTC
+  end_schedule:   "0 10 * * 0"  # Sunday 10:00 UTC
+  startingDeadlineSeconds: 300
+  image:
+    repository: bitnami/kubectl
+    tag: "1.29"
+    pullPolicy: IfNotPresent
+  # CronJobs to suspend during the window.  Each entry is the metadata.name
+  # of a CronJob in this namespace.  The four report-import-scheduler-*
+  # CronJobs originate via {{ .Values.report_import_schedules }} so they
+  # must be listed explicitly here.
+  suspend_cronjobs:
+    - report-import-scheduler-0
+    - report-import-scheduler-1
+    - report-import-scheduler-6
+    - report-import-scheduler-24
+  # Deployments to scale to 0 at start and restore at end.  Each entry is
+  # name + replicas (the replica count to restore to at maintenance-end).
+  scale_deployments:
+    - name: diworker
+      replicas: 3
 
 aws_billing_reset:
   name: aws-billing-reset

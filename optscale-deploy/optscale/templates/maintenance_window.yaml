@@ -1,0 +1,142 @@
+{{- $config := .Values.maintenance_window }}
+{{- if $config.enable }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $config.name }}-sa
+  labels:
+    app: {{ $config.name }}
+    release: {{ .Release.Name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $config.name }}-role
+  labels:
+    app: {{ $config.name }}
+    release: {{ .Release.Name }}
+rules:
+  # Patch CronJob.spec.suspend on the report-import schedulers.
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "patch"]
+  # Scale the diworker (and any other listed) Deployment.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $config.name }}-rb
+  labels:
+    app: {{ $config.name }}
+    release: {{ .Release.Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $config.name }}-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $config.name }}-role
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $config.name }}-start
+  labels:
+    app: {{ $config.name }}-start
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+spec:
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  schedule: "{{ $config.start_schedule }}"
+  startingDeadlineSeconds: {{ $config.startingDeadlineSeconds }}
+  jobTemplate:
+    metadata:
+      labels:
+        app: {{ $config.name }}-start
+        release: {{ .Release.Name }}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: {{ $config.name }}-start
+            release: {{ .Release.Name }}
+        spec:
+          serviceAccountName: {{ $config.name }}-sa
+          restartPolicy: Never
+          containers:
+            - name: {{ $config.name }}-start
+              image: "{{ $config.image.repository }}:{{ $config.image.tag }}"
+              imagePullPolicy: {{ $config.image.pullPolicy }}
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  echo "[maintenance-window] START at $(date -u +%FT%TZ)"
+                  {{- range $cj := $config.suspend_cronjobs }}
+                  echo "Suspending CronJob {{ $cj }}"
+                  kubectl patch cronjob {{ $cj }} -p '{"spec":{"suspend":true}}' || echo "  (skip: {{ $cj }} not found or patch failed)"
+                  {{- end }}
+                  {{- range $dep := $config.scale_deployments }}
+                  echo "Scaling Deployment {{ $dep.name }} to 0"
+                  kubectl scale deployment {{ $dep.name }} --replicas=0 || echo "  (skip: {{ $dep.name }} not found or scale failed)"
+                  {{- end }}
+                  echo "[maintenance-window] START complete"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $config.name }}-end
+  labels:
+    app: {{ $config.name }}-end
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+spec:
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  schedule: "{{ $config.end_schedule }}"
+  startingDeadlineSeconds: {{ $config.startingDeadlineSeconds }}
+  jobTemplate:
+    metadata:
+      labels:
+        app: {{ $config.name }}-end
+        release: {{ .Release.Name }}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: {{ $config.name }}-end
+            release: {{ .Release.Name }}
+        spec:
+          serviceAccountName: {{ $config.name }}-sa
+          restartPolicy: Never
+          containers:
+            - name: {{ $config.name }}-end
+              image: "{{ $config.image.repository }}:{{ $config.image.tag }}"
+              imagePullPolicy: {{ $config.image.pullPolicy }}
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  echo "[maintenance-window] END at $(date -u +%FT%TZ)"
+                  {{- range $cj := $config.suspend_cronjobs }}
+                  echo "Unsuspending CronJob {{ $cj }}"
+                  kubectl patch cronjob {{ $cj }} -p '{"spec":{"suspend":false}}' || echo "  (skip: {{ $cj }} not found or patch failed)"
+                  {{- end }}
+                  {{- range $dep := $config.scale_deployments }}
+                  echo "Scaling Deployment {{ $dep.name }} to {{ $dep.replicas }}"
+                  kubectl scale deployment {{ $dep.name }} --replicas={{ $dep.replicas }} || echo "  (skip: {{ $dep.name }} not found or scale failed)"
+                  {{- end }}
+                  echo "[maintenance-window] END complete"
+{{- end }}
