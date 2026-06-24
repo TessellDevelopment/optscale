@@ -423,6 +423,26 @@ class Client(etcd.Client):
         return result['recipient'] if result['enabled'] == 'True' else (
             self.optscale_email_recipient())
 
+    def optscale_cc_recipients(self):
+        """
+        Gets the list of recipients to CC on every outgoing email.
+        Returns an empty list when CC is disabled or unset.
+        """
+        try:
+            result = self.read_branch("/optscale_cc_emails")
+        except etcd.EtcdKeyNotFound:
+            return []
+        if result.get('enabled') != 'True':
+            return []
+        recipients = result.get('recipients')
+        if not recipients:
+            return []
+        if isinstance(recipients, dict):
+            return [v for _, v in sorted(recipients.items()) if v]
+        if isinstance(recipients, str):
+            return [recipients] if recipients else []
+        return list(recipients)
+
     def google_calendar_service_key(self):
         """
         Gets Google calendar service account key

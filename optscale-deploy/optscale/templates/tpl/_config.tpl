@@ -38,6 +38,9 @@ etcd:
   optscale_error_emails:
     recipient: {{ .Values.optscale_error_emails.recipient }}
     enabled: {{ .Values.optscale_error_emails.enabled }}
+  optscale_cc_emails:
+    recipients: {{- toYaml .Values.optscale_cc_emails.recipients | nindent 6 }}
+    enabled: {{ .Values.optscale_cc_emails.enabled }}
   skip_email_filters:
   {{- range $key, $value := .Values.skip_email_filters }}
     {{ $key }}:

@@ -1151,6 +1151,12 @@ optscale_error_emails:
   enabled: false
 
 # filled from optscale overlay
+# Optscale recipients automatically CC'd on every outgoing email
+optscale_cc_emails:
+  recipients: []
+  enabled: false
+
+# filled from optscale overlay
 # Optscale email domains blacklists
 domains_blacklists:
   registration:
