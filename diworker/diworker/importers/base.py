@@ -16,6 +16,7 @@ from boto3.session import Config as BotoConfig
 from tools.cloud_adapter.cloud import Cloud as CloudAdapter
 from diworker.diworker.utils import (
     retry_mongo_upsert,
+    retry_mongo_operation,
     get_month_start,
 )
 
@@ -116,8 +117,7 @@ class BaseReportImporter:
                 },
                 upsert=True,
             ))
-        r = retry_mongo_upsert(self.mongo_raw.bulk_write, upsert_bulk)
-        LOG.debug('updated: %s', r.bulk_api_result)
+        retry_mongo_upsert(self.mongo_raw.bulk_write, upsert_bulk)
 
     @staticmethod
     def _get_fake_cad_extras(expense):
@@ -194,19 +194,29 @@ class BaseReportImporter:
 
     def get_clickhouse_expenses(self, from_dt, to_dt, resource_ids,
                                 cloud_account_id):
+        # resource_ids is passed as an external data table so that large
+        # account sets do not exceed ClickHouse's max_query_size (default
+        # 256 KB).  Using %(resource_ids)s inlines every UUID into the query
+        # string and fails at ~6 700 resources; the external-table approach
+        # has no such limit.
         return self.clickhouse_cl.query("""
             SELECT resource_id, date, cost, sign
             FROM expenses
             WHERE cloud_account_id = %(cloud_account_id)s
                 AND date >= %(from_dt)s
                 AND date <= %(to_dt)s
-                AND resource_id in %(resource_ids)s
+                AND resource_id IN resource_ids
         """, parameters={
             'cloud_account_id': cloud_account_id,
             'from_dt': from_dt,
             'to_dt': to_dt,
-            'resource_ids': list(resource_ids)
-        }).result_rows
+        }, external_data=ExternalDataConverter()([
+            {
+                'name': 'resource_ids',
+                'structure': [('id', 'String')],
+                'data': [{'id': r_id} for r_id in resource_ids]
+            }
+        ])).result_rows
 
     def get_resource_info_map(self, chunk):
         return {
@@ -215,7 +225,8 @@ class BaseReportImporter:
         }
 
     def save_clean_expenses(self, cloud_account_id, chunk,
-                            unique_id_field='resource_id'):
+                            unique_id_field='resource_id',
+                            deferred_expense_info=None):
         info_map = self.get_resource_info_map(chunk)
         cloud_unique_id_field = 'cloud_%s' % unique_id_field
 
@@ -249,37 +260,82 @@ class BaseReportImporter:
         if resource_ids:
             existing_expenses = self.get_clickhouse_expenses(
                 min_date, max_date, resource_ids, cloud_account_id)
-            resource_id_date_cost_map = defaultdict(dict)
-            for resource_id, date, clickhouse_cost, sign in existing_expenses:
-                if not resource_id_date_cost_map[resource_id].get(date):
-                    resource_id_date_cost_map[resource_id][date] = list()
-                resource_id_date_cost_map[resource_id][date].append(
-                    (clickhouse_cost, sign))
-            clickhouse_expenses = []
-            for expense in clean_expenses:
-                expense_date = expense['date'].replace(tzinfo=None)
-                clickhouse_expense = resource_id_date_cost_map[
-                    expense['resource_id']].get(expense_date)
-                if not clickhouse_expense:
-                    clickhouse_expenses.append(
-                        self.gen_clickhouse_expense(expense))
-                    continue
-                exists = sum([x for _, x in clickhouse_expense])
-                if exists:
-                    cost = sum([x * s for x, s in clickhouse_expense])
-                    if cost != expense['cost']:
-                        clickhouse_expenses.extend([
-                            self.gen_clickhouse_expense(expense, cost),
-                            self.gen_clickhouse_expense(expense)
-                        ])
-                else:
-                    clickhouse_expenses.append(
-                        self.gen_clickhouse_expense(expense))
+            clickhouse_expenses = self._build_clickhouse_diff(
+                clean_expenses, existing_expenses)
             if clickhouse_expenses:
                 self.update_clickhouse_expenses(clickhouse_expenses,
                                                 column_names)
-                self.update_resource_expense_info(cloud_account_id,
-                                                  last_expense_info)
+                if deferred_expense_info is not None:
+                    # Caller will flush all chunks in one shot at the end
+                    deferred_expense_info.update(last_expense_info)
+                else:
+                    self.update_resource_expense_info(cloud_account_id,
+                                                      last_expense_info)
+
+    @classmethod
+    def _build_clickhouse_diff(cls, clean_expenses, existing_expenses):
+        """
+        Given the Python-computed clean_expenses for one (or many) chunks and
+        the rows currently in ClickHouse for the same (resource_id, date)
+        cells, return the list of CollapsingMergeTree rows to insert.
+
+        Same dedup logic as before; extracted so both the per-chunk and the
+        bulk path can share it.
+        """
+        resource_id_date_cost_map = defaultdict(dict)
+        for resource_id, date, clickhouse_cost, sign in existing_expenses:
+            if not resource_id_date_cost_map[resource_id].get(date):
+                resource_id_date_cost_map[resource_id][date] = list()
+            resource_id_date_cost_map[resource_id][date].append(
+                (clickhouse_cost, sign))
+        clickhouse_expenses = []
+        for expense in clean_expenses:
+            expense_date = expense['date'].replace(tzinfo=None)
+            clickhouse_expense = resource_id_date_cost_map[
+                expense['resource_id']].get(expense_date)
+            if not clickhouse_expense:
+                clickhouse_expenses.append(
+                    cls.gen_clickhouse_expense(expense))
+                continue
+            exists = sum([x for _, x in clickhouse_expense])
+            if exists:
+                cost = sum([x * s for x, s in clickhouse_expense])
+                if cost != expense['cost']:
+                    clickhouse_expenses.extend([
+                        cls.gen_clickhouse_expense(expense, cost),
+                        cls.gen_clickhouse_expense(expense)
+                    ])
+            else:
+                clickhouse_expenses.append(
+                    cls.gen_clickhouse_expense(expense))
+        return clickhouse_expenses
+
+    def _apply_bulk_clickhouse_diff(self, cloud_account_id,
+                                    clean_expenses, last_expense_info):
+        """
+        Bulk counterpart to save_clean_expenses' per-chunk ClickHouse block.
+
+        Runs ONE ClickHouse range read for the union of all dates and
+        resource_ids, computes the diff in Python, runs ONE ClickHouse
+        insert, then ONE update_resource_expense_info.
+        """
+        if not clean_expenses or not last_expense_info:
+            return
+        min_date = min(e['date'] for e in clean_expenses)
+        max_date = max(e['date'] for e in clean_expenses)
+        existing_expenses = self.get_clickhouse_expenses(
+            min_date, max_date, last_expense_info.keys(), cloud_account_id)
+        clickhouse_expenses = self._build_clickhouse_diff(
+            clean_expenses, existing_expenses)
+        if not clickhouse_expenses:
+            return
+        column_names = [
+            "cloud_account_id", "resource_id", "date", "cost", "sign"]
+        LOG.info(
+            'Bulk ClickHouse flush: inserting %s rows for %s resources',
+            len(clickhouse_expenses), len(last_expense_info))
+        self.update_clickhouse_expenses(clickhouse_expenses, column_names)
+        self.update_resource_expense_info(cloud_account_id, last_expense_info)
 
     def update_resource_expense_info(self, cloud_account_id,
                                      last_expense_info):
@@ -329,6 +385,7 @@ class BaseReportImporter:
         ]))
         return {r[0]: (r[1], r[2]) for r in info_q.result_rows}
 
+    @retry_mongo_operation
     def get_resource_ids(self, cloud_account_id, period_start):
         base_filters = {'cloud_account_id': cloud_account_id}
         if period_start:
@@ -351,7 +408,10 @@ class BaseReportImporter:
     def _get_additional_expenses_groupings():
         return
 
+    @retry_mongo_operation
     def get_raw_expenses_by_filters(self, filters):
+        # Cursor is fully consumed here so the entire network round-trip
+        # (aggregate command + batch fetches) is within the retry boundary.
         grp_stage = {
             'resource_id': '$resource_id',
             'dt': '$start_date',
@@ -359,7 +419,7 @@ class BaseReportImporter:
         additional = self._get_additional_expenses_groupings()
         if additional:
             grp_stage.update(additional)
-        return self.mongo_raw.aggregate([
+        return list(self.mongo_raw.aggregate([
                 {'$match': {
                     '$and': filters,
                 }},
@@ -367,7 +427,7 @@ class BaseReportImporter:
                     '_id': grp_stage,
                     'expenses': {'$push': '$$ROOT'}
                 }},
-            ], allowDiskUse=True)
+            ], allowDiskUse=True))
 
     def _get_billing_period_filters(self, period_start):
         return {'start_date': {'$gte': period_start}}
@@ -379,6 +439,10 @@ class BaseReportImporter:
             'Generating clean expenses for %s resources in account %s for %s',
             resource_count, cloud_account_id, period_start)
         progress = 0
+        # Accumulate last_expense_info across all chunks so that
+        # update_resource_expense_info (1 ClickHouse read + 1 Mongo bulk_write)
+        # is called once per account instead of once per chunk.
+        deferred_expense_info = {}
         for i in range(0, resource_count, CHUNK_SIZE):
             new_progress = round(i / resource_count * 100)
             if new_progress != progress:
@@ -392,8 +456,12 @@ class BaseReportImporter:
                     '$in': resource_ids[i:i + CHUNK_SIZE]}}]
             expenses = self.get_raw_expenses_by_filters(filters)
             chunk = self.set_raw_chunk(expenses)
-            self.save_clean_expenses(cloud_account_id, chunk)
+            self.save_clean_expenses(cloud_account_id, chunk,
+                                     deferred_expense_info=deferred_expense_info)
 
+        if deferred_expense_info:
+            self.update_resource_expense_info(cloud_account_id,
+                                              deferred_expense_info)
         LOG.info('Finished generating clean expenses for %s resources',
                  resource_count)
 
@@ -593,18 +661,129 @@ class BaseReportImporter:
         if not last_start_date or last_start_date < start_date:
             cl_acc_dates['last_start_date'] = start_date
 
+    @retry_mongo_operation
+    def _fetch_rudiment_ids(self, delete_filter, batch_size):
+        # Cursor is fully consumed here so a NetworkTimeout mid-iteration
+        # is retried as a whole batch fetch, not lost.
+        cursor = self.mongo_raw.find(
+            delete_filter,
+            {'_id': 1}
+        ).limit(batch_size)
+        return [doc['_id'] for doc in cursor]
+
+    @retry_mongo_operation
+    def _delete_rudiments_by_ids(self, ids_to_delete):
+        return self.mongo_raw.delete_many(
+            {'_id': {'$in': ids_to_delete}}).deleted_count
+
     def clear_rudiments(self):
+        """
+        Clear old raw expense records that don't match the current report_identity.
+        Uses batched deletion to avoid MongoDB timeout on large datasets and reduce
+        storage pressure during deletion.
+
+        IMPORTANT: This operation deletes potentially millions of records in batches
+        to prevent:
+        1. MongoDB socket timeout (10 min limit)
+        2. Storage I/O contention when disk is near capacity
+        3. Memory pressure from large delete operations
+        """
+        BATCH_SIZE = 5000  # Smaller batches for better performance on stressed systems
+
         for cloud_account_id, dates in self.imported_raw_dates_map.items():
-            result = self.mongo_raw.delete_many({
+            delete_filter = {
                 'cloud_account_id': cloud_account_id,
                 'start_date': {
                     '$gte': dates.get('start_date'),
                     '$lte': dates.get('last_start_date')
                 },
                 'report_identity': {'$ne': self.report_identity}
-            })
-            LOG.info('Cleared %s rudiments for cloud_account %s' %
-                     (result.deleted_count, cloud_account_id))
+            }
+
+            # First, estimate how many documents we need to delete (with timeout protection)
+            # Use estimatedDocumentCount for speed if count times out
+            try:
+                total_to_delete = self.mongo_raw.count_documents(
+                    delete_filter, maxTimeMS=30000)  # 30 second timeout for count
+                if total_to_delete == 0:
+                    LOG.info('No rudiments to clear for cloud_account %s' % cloud_account_id)
+                    continue
+
+                LOG.info('Clearing %s rudiments for cloud_account %s in batches of %s' %
+                         (total_to_delete, cloud_account_id, BATCH_SIZE))
+
+                # Warn if large deletion is about to occur
+                if total_to_delete > 100000:
+                    LOG.warning('Large deletion operation: %s records. This may take time '
+                               'and could indicate storage pressure.' % total_to_delete)
+            except Exception as e:
+                LOG.warning('Could not count rudiments for cloud_account %s: %s. '
+                           'Proceeding with batched deletion anyway.' % (cloud_account_id, e))
+                total_to_delete = None
+
+            # Delete in batches to avoid timeout and reduce I/O pressure
+            total_deleted = 0
+            batch_num = 0
+            overall_start = time.time()
+
+            while True:
+                batch_num += 1
+                batch_start = time.time()
+
+                try:
+                    # Find IDs of documents to delete in this batch
+                    # Using find() with limit is more efficient than delete_many without limit
+                    # Project only _id to minimize network transfer and memory usage
+                    ids_to_delete = self._fetch_rudiment_ids(
+                        delete_filter, BATCH_SIZE)
+
+                    if not ids_to_delete:
+                        # No more documents to delete
+                        break
+
+                    # Delete by IDs (fastest approach using primary index)
+                    deleted_count = self._delete_rudiments_by_ids(ids_to_delete)
+                    total_deleted += deleted_count
+
+                    batch_duration = time.time() - batch_start
+
+                    # Calculate throughput
+                    docs_per_sec = deleted_count / batch_duration if batch_duration > 0 else 0
+
+                    progress_msg = 'Batch %s: Deleted %s rudiments in %.2fs (%.0f docs/sec)' % (
+                        batch_num, deleted_count, batch_duration, docs_per_sec)
+                    if total_to_delete:
+                        progress_msg += ' - Progress: %s/%s (%.1f%%)' % (
+                            total_deleted, total_to_delete,
+                            (total_deleted / total_to_delete) * 100)
+                    else:
+                        progress_msg += ' - Total: %s' % total_deleted
+                    LOG.info(progress_msg)
+
+                    # If we deleted fewer than BATCH_SIZE, we're done
+                    if deleted_count < BATCH_SIZE:
+                        break
+
+                    # Add a small delay every 10 batches to reduce I/O pressure on stressed systems
+                    # This helps when MongoDB disk is near capacity (>80%)
+                    if batch_num % 10 == 0:
+                        time.sleep(0.1)  # 100ms pause to let I/O subsystem breathe
+
+                except Exception as e:
+                    LOG.error('Error deleting rudiments batch %s for cloud_account %s: %s' %
+                             (batch_num, cloud_account_id, e))
+                    # If we've already deleted some, consider it a partial success
+                    if total_deleted > 0:
+                        LOG.warning('Cleared %s rudiments before error occurred' % total_deleted)
+                    raise
+
+            overall_duration = time.time() - overall_start
+            avg_throughput = total_deleted / overall_duration if overall_duration > 0 else 0
+
+            LOG.info('Successfully cleared %s total rudiments for cloud_account %s in %.2fs '
+                     '(avg: %.0f docs/sec, %s batches)' %
+                     (total_deleted, cloud_account_id, overall_duration,
+                      avg_throughput, batch_num))
 
 
 class CSVBaseReportImporter(BaseReportImporter):
@@ -718,12 +897,45 @@ class CSVBaseReportImporter(BaseReportImporter):
     def load_report(self, report_path, account_id_ca_id_ma):
         raise NotImplementedError
 
+    def _persist_download_cursor(self):
+        """
+        Write last_import_modified_at to the DB immediately after the S3
+        download phase, before the long data_import() phase begins.
+
+        This breaks the doom loop where a large account's import always gets
+        killed (RabbitMQ consumer_timeout) before it can complete, causing
+        last_import_modified_at to never advance and the next run to re-download
+        the same months of historical CUR data all over again.
+
+        After this call succeeds the next run will only pick up S3 files whose
+        LastModified is newer than what we just downloaded, regardless of
+        whether the current import finishes.
+        """
+        if self.last_import_modified_at and self.last_import_modified_at > 0:
+            try:
+                for cloud_acc_id in self.detected_cloud_accounts:
+                    self.rest_cl.cloud_account_update(
+                        cloud_acc_id,
+                        {'last_import_modified_at': self.last_import_modified_at})
+                LOG.info(
+                    'Persisted last_import_modified_at=%s after download '
+                    'for %s account(s)',
+                    self.last_import_modified_at,
+                    len(self.detected_cloud_accounts))
+            except Exception as exc:
+                # Non-fatal: the import can still proceed; the doom-loop
+                # protection just won't apply on a crash before completion.
+                LOG.warning(
+                    'Could not persist last_import_modified_at after '
+                    'download (will retry at import completion): %s', exc)
+
     def prepare(self):
         if self.import_file is not None:
             self.download_from_object_store()
         else:
             self.download_from_cloud()
         self.unpack_report_files()
+        self._persist_download_cursor()
 
     def get_linked_account_map(self):
         return {self.cloud_acc['account_id']: self.cloud_acc_id}
@@ -764,12 +976,36 @@ class CSVBaseReportImporter(BaseReportImporter):
         # useless if there is nothing to import
         if not self.report_files and not regeneration:
             return
-        billing_periods = {
-            None} if not self.billing_periods else self.billing_periods
+        billing_periods = (
+            {None} if not self.billing_periods else self.billing_periods)
+        # Track per-period failures separately so that a MongoDB timeout on
+        # one billing period (after all @retry_mongo_operation attempts are
+        # exhausted) does not abandon the remaining periods.  Each period is
+        # independent — its clean records can be generated from the already-
+        # committed raw expenses.  After all periods are attempted we re-raise
+        # a summary exception so the import is still marked failed and the
+        # scheduler retries it; but on that retry only the failed period(s)
+        # need to be re-processed (the others are already up-to-date).
+        failed_periods = []
         for cc_id in self.detected_cloud_accounts:
             for billing_period in sorted(billing_periods, reverse=True):
-                resource_ids = self.get_resource_ids(cc_id, billing_period)
-                self._generate_clean_records(resource_ids, cc_id, billing_period)
+                try:
+                    resource_ids = self.get_resource_ids(cc_id, billing_period)
+                    self._generate_clean_records(
+                        resource_ids, cc_id, billing_period)
+                except Exception as exc:
+                    LOG.error(
+                        'generate_clean_records: billing_period %s for '
+                        'account %s failed after all retries — skipping '
+                        'to next period: %s', billing_period, cc_id, exc)
+                    failed_periods.append((cc_id, billing_period, exc))
+        if failed_periods:
+            reasons = ', '.join(
+                'period %s for %s: %s' % (p, c, e)
+                for c, p, e in failed_periods)
+            raise Exception(
+                '%d billing period(s) failed in generate_clean_records: %s'
+                % (len(failed_periods), reasons))
 
     def cleanup(self):
         shutil.rmtree(self.reports_dir, ignore_errors=True)

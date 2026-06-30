@@ -61,8 +61,9 @@ class Worker(ConsumerMixin):
     @property
     def mongo_client(self) -> MongoClient:
         if self._mongo_client is None:
+            from optscale_client.mongo_client import get_mongo_client
             mongo_params = self.config_client.mongo_params()
-            self._mongo_client = MongoClient(mongo_params[0])
+            self._mongo_client = get_mongo_client(mongo_params[0])
         return self._mongo_client
 
     @property

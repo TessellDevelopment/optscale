@@ -132,6 +132,7 @@ class ResourcesSaver:
                                                resource_type).value
         obj['last_seen'] = utcnow_timestamp()
         obj['active'] = True
+        obj['meta'] = resource.meta
         cloud_acc_id = obj.pop('cloud_account_id')
         return obj, cloud_acc_id
 
@@ -251,7 +252,7 @@ class DiscoveryWorker(ConsumerMixin):
 
     def get_consumers(self, Consumer, channel):
         return [Consumer(queues=[task_queue], accept=['json'],
-                         callbacks=[self.process_task], prefetch_count=1)]
+                         callbacks=[self.process_task], prefetch_count=5)]
 
     def get_config(self, cloud_account_id):
         _, cloud_account = self.rest_cl.cloud_account_get(cloud_account_id)

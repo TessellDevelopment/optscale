@@ -590,6 +590,19 @@ export type InvitationAssignment = {
   scope_type: Scalars["String"]["output"];
 };
 
+export type OrganizationInvitation = {
+  __typename?: "OrganizationInvitation";
+  id: Scalars["String"]["output"];
+  email: Scalars["String"]["output"];
+  owner_name: Scalars["String"]["output"];
+  owner_email: Scalars["String"]["output"];
+  organization: Scalars["String"]["output"];
+  organization_id: Scalars["String"]["output"];
+  created_at: Scalars["Int"]["output"];
+  ttl: Scalars["Int"]["output"];
+  invite_assignments?: Maybe<Array<InvitationAssignment>>;
+};
+
 export type K8CostModelConfig = {
   __typename?: "K8CostModelConfig";
   cpu_hourly_cost: Scalars["Float"]["output"];
@@ -645,6 +658,7 @@ export type Mutation = {
   createStripeCheckoutSession?: Maybe<StripeSession>;
   deleteDataSource?: Maybe<Scalars["String"]["output"]>;
   deleteOrganization?: Maybe<Scalars["String"]["output"]>;
+  dismissInvitation?: Maybe<Scalars["String"]["output"]>;
   scheduleGeminiDataPreparation?: Maybe<ScheduleGeminiDataPreparation>;
   updateDataSource?: Maybe<DataSourceInterface>;
   updateEmployeeEmail?: Maybe<EmployeeEmail>;
@@ -679,6 +693,10 @@ export type MutationDeleteDataSourceArgs = {
 
 export type MutationDeleteOrganizationArgs = {
   organizationId: Scalars["ID"]["input"];
+};
+
+export type MutationDismissInvitationArgs = {
+  invitationId: Scalars["String"]["input"];
 };
 
 export type MutationScheduleGeminiDataPreparationArgs = {
@@ -850,6 +868,7 @@ export type Query = {
   metaBreakdown?: Maybe<MetaBreakdown>;
   organizationConstraint?: Maybe<OrganizationConstraint>;
   organizationFeatures?: Maybe<Scalars["JSONObject"]["output"]>;
+  organizationInvitations?: Maybe<Array<Maybe<OrganizationInvitation>>>;
   organizationLimitHits?: Maybe<Array<OrganizationLimitHit>>;
   organizationPerspectives?: Maybe<Scalars["JSONObject"]["output"]>;
   organizationSummary: OrganizationSummary;
@@ -918,6 +937,10 @@ export type QueryOrganizationConstraintArgs = {
 };
 
 export type QueryOrganizationFeaturesArgs = {
+  organizationId: Scalars["ID"]["input"];
+};
+
+export type QueryOrganizationInvitationsArgs = {
   organizationId: Scalars["ID"]["input"];
 };
 
@@ -1170,6 +1193,7 @@ export type ResolversTypes = {
   Int: ResolverTypeWrapper<Scalars["Int"]["output"]>;
   Invitation: ResolverTypeWrapper<Invitation>;
   InvitationAssignment: ResolverTypeWrapper<InvitationAssignment>;
+  OrganizationInvitation: ResolverTypeWrapper<OrganizationInvitation>;
   JSONObject: ResolverTypeWrapper<Scalars["JSONObject"]["output"]>;
   K8CostModelConfig: ResolverTypeWrapper<K8CostModelConfig>;
   K8sConfig: ResolverTypeWrapper<K8sConfig>;
@@ -1256,6 +1280,7 @@ export type ResolversParentTypes = {
   Int: Scalars["Int"]["output"];
   Invitation: Invitation;
   InvitationAssignment: InvitationAssignment;
+  OrganizationInvitation: OrganizationInvitation;
   JSONObject: Scalars["JSONObject"]["output"];
   K8CostModelConfig: K8CostModelConfig;
   K8sConfig: K8sConfig;
@@ -1705,6 +1730,21 @@ export type InvitationAssignmentResolvers<
   scope_type?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
 };
 
+export type OrganizationInvitationResolvers<
+  ContextType = ContextValue,
+  ParentType extends ResolversParentTypes["OrganizationInvitation"] = ResolversParentTypes["OrganizationInvitation"],
+> = {
+  id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  email?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  owner_name?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  owner_email?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  organization?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  organization_id?: Resolver<ResolversTypes["String"], ParentType, ContextType>;
+  created_at?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  ttl?: Resolver<ResolversTypes["Int"], ParentType, ContextType>;
+  invite_assignments?: Resolver<Maybe<Array<ResolversTypes["InvitationAssignment"]>>, ParentType, ContextType>;
+};
+
 export interface JsonObjectScalarConfig extends GraphQLScalarTypeConfig<ResolversTypes["JSONObject"], any> {
   name: "JSONObject";
 }
@@ -1797,6 +1837,12 @@ export type MutationResolvers<
     ParentType,
     ContextType,
     RequireFields<MutationDeleteOrganizationArgs, "organizationId">
+  >;
+  dismissInvitation?: Resolver<
+    Maybe<ResolversTypes["String"]>,
+    ParentType,
+    ContextType,
+    RequireFields<MutationDismissInvitationArgs, "invitationId">
   >;
   scheduleGeminiDataPreparation?: Resolver<
     Maybe<ResolversTypes["ScheduleGeminiDataPreparation"]>,
@@ -2037,6 +2083,12 @@ export type QueryResolvers<
     ContextType,
     RequireFields<QueryOrganizationFeaturesArgs, "organizationId">
   >;
+  organizationInvitations?: Resolver<
+    Maybe<Array<Maybe<ResolversTypes["OrganizationInvitation"]>>>,
+    ParentType,
+    ContextType,
+    RequireFields<QueryOrganizationInvitationsArgs, "organizationId">
+  >;
   organizationLimitHits?: Resolver<
     Maybe<Array<ResolversTypes["OrganizationLimitHit"]>>,
     ParentType,
@@ -2137,6 +2189,7 @@ export type Resolvers<ContextType = ContextValue> = {
   GeminiDataPreparation?: GeminiDataPreparationResolvers<ContextType>;
   Invitation?: InvitationResolvers<ContextType>;
   InvitationAssignment?: InvitationAssignmentResolvers<ContextType>;
+  OrganizationInvitation?: OrganizationInvitationResolvers<ContextType>;
   JSONObject?: GraphQLScalarType;
   K8CostModelConfig?: K8CostModelConfigResolvers<ContextType>;
   K8sConfig?: K8sConfigResolvers<ContextType>;

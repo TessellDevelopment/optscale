@@ -47,18 +47,26 @@ def _is_valid_smtp_params(params):
     return is_valid_port(port)
 
 
+def _get_recipients(message):
+    recipients = [message.get("To")]
+    cc_header = message.get("Cc")
+    if cc_header:
+        recipients.extend([a.strip() for a in cc_header.split(",")])
+    return recipients
+
+
 def _send_email_smtp_ssl(server, port, email, login, password, message):
     context = ssl._create_unverified_context()
     with smtplib.SMTP_SSL(server, port, context=context) as smtp_server:
         smtp_server.login(login, password)
-        smtp_server.sendmail(email, message.get("To"), message.as_string())
+        smtp_server.sendmail(email, _get_recipients(message), message.as_string())
 
 
 def _send_email_smtp_tls(server, port, email, login, password, message):
     with smtplib.SMTP(server, port) as smtp_server:
         smtp_server.starttls()
         smtp_server.login(login, password)
-        smtp_server.sendmail(email, message.get("To"), message.as_string())
+        smtp_server.sendmail(email, _get_recipients(message), message.as_string())
 
 
 def _send_email_to_user_smtp(server, port, email, login, password, message, protocol):

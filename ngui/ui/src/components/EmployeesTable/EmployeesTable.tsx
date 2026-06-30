@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import CloudDownloadOutlinedIcon from "@mui/icons-material/CloudDownloadOutlined";
 import DeleteOutlinedIcon from "@mui/icons-material/DeleteOutlined";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PersonAddOutlinedIcon from "@mui/icons-material/PersonAddOutlined";
 import { Typography } from "@mui/material";
 import Box from "@mui/material/Box";
@@ -10,7 +11,7 @@ import CaptionedCell from "components/CaptionedCell";
 import Icon from "components/Icon";
 import { JIRA } from "components/Integrations/Jira/Jira";
 import PoolLabel from "components/PoolLabel";
-import { DeleteEmployeeModal, SlackIntegrationModal } from "components/SideModalManager/SideModals";
+import { DeleteEmployeeModal, EditEmployeeRoleModal, SlackIntegrationModal } from "components/SideModalManager/SideModals";
 import Table from "components/Table";
 import TableCellActions from "components/TableCellActions";
 import TableLoader from "components/TableLoader";
@@ -188,9 +189,22 @@ const EmployeesTable = ({ isLoading = false, employees }) => {
         id: "actions",
         enableSorting: false,
         enableHiding: false,
-        cell: ({ row: { original: { name: employeeName, id: employeeId } = {}, index } }) => (
+        cell: ({ row: { original, index } }) => (
           <TableCellActions
             items={[
+              {
+                key: "edit_role",
+                messageId: "editRole",
+                icon: <EditOutlinedIcon />,
+                color: "primary",
+                requiredActions: ["EDIT_PARTNER"],
+                dataTestId: `btn_edit_role_${index}`,
+                action: () =>
+                  openSideModal(EditEmployeeRoleModal, {
+                    employee: original,
+                    organizationId,
+                  }),
+              },
               {
                 key: "delete",
                 messageId: "delete",
@@ -199,7 +213,10 @@ const EmployeesTable = ({ isLoading = false, employees }) => {
                 requiredActions: ["EDIT_PARTNER"],
                 dataTestId: `btn_delete_${index}`,
                 action: () =>
-                  openSideModal(DeleteEmployeeModal, { entityToBeDeleted: { employeeName, employeeId }, employees: data }),
+                  openSideModal(DeleteEmployeeModal, {
+                    entityToBeDeleted: { employeeName: original.name, employeeId: original.id },
+                    employees: data,
+                  }),
               },
             ]}
           />

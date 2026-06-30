@@ -50,7 +50,19 @@ class BaseExporter:
     @cached_property
     def mongo_cl(self) -> MongoClient:
         mongo_params = self._config_cl.mongo_params()
-        return MongoClient(mongo_params[0])
+        # Configure MongoDB client with explicit timeouts and connection pool settings
+        # to prevent connection refused errors during data export
+        return MongoClient(
+            mongo_params[0],
+            serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
+            connectTimeoutMS=20000,          # 20 seconds to establish connection
+            socketTimeoutMS=60000,           # 60 seconds for socket operations
+            maxPoolSize=50,                  # Maximum connections in pool
+            minPoolSize=10,                  # Minimum connections to maintain
+            maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
+            retryWrites=True,                # Automatically retry write operations
+            retryReads=True                  # Automatically retry read operations
+        )
 
     @cached_property
     def clickhouse_cl(self) -> ClickHouseClient:

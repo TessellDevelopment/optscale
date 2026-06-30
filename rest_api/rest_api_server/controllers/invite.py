@@ -22,7 +22,8 @@ from rest_api.rest_api_server.utils import query_url
 from optscale_client.herald_client.client_v2 import Client as HeraldClient
 
 from tools.optscale_exceptions.common_exc import (
-    NotFoundException, HeraldException, WrongArgumentsException)
+    NotFoundException, HeraldException, WrongArgumentsException,
+    ForbiddenException)
 from currency_symbols.currency_symbols import CURRENCY_SYMBOLS_MAP
 
 LOG = logging.getLogger(__name__)
@@ -218,6 +219,48 @@ class InviteController(BaseController):
     def decline_invite(self, invite_id, user_info):
         invite = self.get_invite_for_user_info(invite_id, user_info)
         self.delete_invite(invite)
+
+    def dismiss_invite(self, invite_id, user_info):
+        """
+        Dismiss (delete) an invite. Organization managers can dismiss any invite
+        for their organization. Regular users can only dismiss invites sent to
+        their email.
+        """
+        # First, try to get the invite
+        invite = self.get(item_id=invite_id)
+        if not invite or invite.deleted_at != 0:
+            raise NotFoundException(Err.OE0002, [Invite.__name__, invite_id])
+
+        # Check TTL
+        now = opttime.utcnow_timestamp()
+        if invite.ttl <= now:
+            self.update(invite_id, deleted_at=now)
+            raise NotFoundException(Err.OE0002, [Invite.__name__, invite_id])
+
+        # Extract organization_id from invite metadata
+        meta = json.loads(invite.meta)
+        organization_id = meta.get('organization_id')
+
+        # Check if user has permission to dismiss this invite
+        user_email = user_info.get('email')
+
+        # Option 1: User is dismissing their own invite
+        if invite.email == user_email:
+            self.delete_invite(invite)
+            return
+
+        # Option 2: User is an organization manager
+        if organization_id:
+            is_manager = self.check_user_is_org_manager(
+                org_ids=[organization_id],
+                pool_ids=[]
+            )
+            if is_manager:
+                self.delete_invite(invite)
+                return
+
+        # User doesn't have permission to dismiss this invite
+        raise ForbiddenException(Err.OE0234, [])
 
     def delete_invite(self, invite):
         for invite_assignment in invite.invite_assignments:

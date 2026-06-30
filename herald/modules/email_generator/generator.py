@@ -76,12 +76,15 @@ def _generate_context(template_params, config_client):
     return context
 
 
-def generate_email(config_client, to, subject, template_params, template_type="default", reply_to_email=None):
+def generate_email(config_client, to, subject, template_params,
+                   template_type="default", reply_to_email=None, cc=None):
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
     msg["To"] = to
     if reply_to_email:
         msg["reply-to"] = reply_to_email
+    if cc:
+        msg["Cc"] = ", ".join(cc) if isinstance(cc, list) else cc
     template_params = template_params if template_params else {}
     context = _generate_context(template_params, config_client)
     msg.attach(_generate_body(context, template_type))

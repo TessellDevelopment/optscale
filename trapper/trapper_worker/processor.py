@@ -1,6 +1,5 @@
 import re
 import requests
-from pymongo import MongoClient
 from kombu.log import get_logger
 import clickhouse_connect
 
@@ -33,8 +32,9 @@ class BaseTrafficExpenseProcessor:
     @property
     def mongo_cl(self):
         if not self._mongo_cl:
+            from optscale_client.mongo_client import get_mongo_client
             mongo_params = self.config_cl.mongo_params()
-            self._mongo_cl = MongoClient(mongo_params[0])
+            self._mongo_cl = get_mongo_client(mongo_params[0])
         return self._mongo_cl
 
     @property

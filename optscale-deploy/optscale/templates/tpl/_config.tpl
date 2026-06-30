@@ -38,6 +38,9 @@ etcd:
   optscale_error_emails:
     recipient: {{ .Values.optscale_error_emails.recipient }}
     enabled: {{ .Values.optscale_error_emails.enabled }}
+  optscale_cc_emails:
+    recipients: {{- toYaml .Values.optscale_cc_emails.recipients | nindent 6 }}
+    enabled: {{ .Values.optscale_cc_emails.enabled }}
   skip_email_filters:
   {{- range $key, $value := .Values.skip_email_filters }}
     {{ $key }}:
@@ -180,11 +183,11 @@ etcd:
     db: subspector
     port: {{ .Values.mariadb.service.externalPort }}
   mongo:
-  {{ if .Values.mongo.url }}
+{{- if .Values.mongo.url }}
     url: {{ .Values.mongo.url }}
-  {{ else }}
+{{- else }}
     url: mongodb://{{ .Values.mongo.credentials.username }}:{{ .Values.mongo.credentials.password }}@{{ .Values.mongo.service.host }}:{{ .Values.mongo.service.externalPort }}
-  {{ end }}
+{{- end }}
     database: keeper
   influxdb:
     host: {{ .Values.influxdb.service.name }}
@@ -213,6 +216,10 @@ etcd:
     rows_limit: {{ .Values.cleanmongodb.rows_limit }}
     archive_enable: {{ .Values.cleanmongodb.archive_enable }}
     file_max_rows: {{ .Values.cleanmongodb.file_max_rows }}
+    compact_after_purge: {{ .Values.cleanmongodb.compact_after_purge }}
+    compact_cycle_size: {{ .Values.cleanmongodb.compact_cycle_size }}
+    raw_expenses_ttl_days: {{ .Values.cleanmongodb.raw_expenses_ttl_days }}
+    max_runtime_secs: {{ .Values.cleanmongodb.max_runtime_secs }}
   disable_email_verification: {{ .Values.disable_email_verification }}
   force_aws_edp_strip: {{ .Values.force_aws_edp_strip }}
   encryption_salt: {{ .Values.encryption_salt }}

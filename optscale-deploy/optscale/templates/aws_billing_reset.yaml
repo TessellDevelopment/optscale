@@ -1,0 +1,56 @@
+{{- $config := .Values.aws_billing_reset }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $config.name }}
+  labels:
+    app: {{ $config.name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+spec:
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  schedule: "{{ $config.schedule }}"
+  startingDeadlineSeconds: {{ $config.startingDeadlineSeconds }}
+  jobTemplate:
+    metadata:
+      labels:
+        app: {{ $config.name }}
+        release: {{ .Release.Name }}
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: {{ $config.name }}
+            release: {{ .Release.Name }}
+        spec:
+          imagePullSecrets:
+          - name: dockerhub-creds
+          initContainers:
+{{ include "wait_for_service" .Values.mariadb | indent 10 }}
+          containers:
+          - name: {{ $config.name }}
+            image: "{{ .Values.docker_registry }}/{{ $config.image.repository }}:{{ if .Values.docker_tag }}{{ .Values.docker_tag }}{{ else }}{{ $config.image.tag }}{{ end }}"
+            imagePullPolicy: {{ $config.image.pullPolicy }}
+            env:
+            - name: IMAGE_ID
+              value: {{ $config.image.id }}
+            - name: DB_HOST
+              value: {{ .Values.mariadb.service.name }}
+            - name: DB_PORT
+              value: {{ .Values.mariadb.service.externalPort | quote }}
+            - name: DB_USER
+              value: {{ .Values.mariadb.credentials.username }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: password
+            - name: DB_NAME
+              value: "my-db"
+            - name: AWS_BILLING_RESET_DAYS
+              value: {{ $config.reset_days | quote }}
+          restartPolicy: Never

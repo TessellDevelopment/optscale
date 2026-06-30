@@ -2,7 +2,7 @@ import clickhouse_connect
 import logging
 from collections import defaultdict
 from datetime import timezone
-from pymongo import MongoClient
+from optscale_client.mongo_client import get_mongo_client
 from optscale_client.insider_client.client import Client as InsiderClient
 from optscale_client.rest_api_client.client_v2 import Client as RestClient
 
@@ -41,7 +41,7 @@ class RispProcessorBase:
     def mongo_client(self):
         if self._mongo_client is None:
             mongo_params = self.config_client.mongo_params()
-            self._mongo_client = MongoClient(mongo_params[0])
+            self._mongo_client = get_mongo_client(mongo_params[0])
         return self._mongo_client
 
     @property

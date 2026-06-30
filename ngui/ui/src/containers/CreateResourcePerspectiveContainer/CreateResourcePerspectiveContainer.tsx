@@ -30,8 +30,15 @@ const CreateResourcePerspectiveContainer = ({
     },
   });
 
-  const onSubmit = (data) =>
-    updateOrganizationPerspectives({
+  const onSubmit = (data) => {
+    console.log("📝 Attempting to save perspective:", {
+      name: data.name,
+      payload: data.payload,
+      organizationId,
+      allPerspectives,
+    });
+
+    return updateOrganizationPerspectives({
       variables: {
         organizationId,
         value: {
@@ -39,7 +46,22 @@ const CreateResourcePerspectiveContainer = ({
           [data.name]: data.payload,
         },
       },
-    }).then(onSuccess);
+    })
+      .then((result) => {
+        console.log("✅ Save successful:", result);
+        onSuccess();
+      })
+      .catch((error) => {
+        console.error("❌ Save failed:", error);
+        console.error("Error details:", {
+          message: error.message,
+          graphQLErrors: error.graphQLErrors,
+          networkError: error.networkError,
+          extraInfo: error.extraInfo,
+        });
+        throw error;
+      });
+  };
 
   return (
     <CreateResourcePerspectiveForm

@@ -337,6 +337,12 @@ class Client:
         }
         return self.post(self.assignment_url(user_id), body)
 
+    def assignment_update(self, id, user_id, role_id):
+        body = {
+            "role_id": role_id
+        }
+        return self.patch(self.assignment_url(user_id, id), body)
+
     def assignment_delete(self, id, user_id):
         return self.delete(self.assignment_url(user_id, id))
 

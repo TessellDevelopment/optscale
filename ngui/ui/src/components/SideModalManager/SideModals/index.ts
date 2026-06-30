@@ -19,6 +19,7 @@ import DeleteAssignmentRuleModal from "./DeleteAssignmentRuleModal";
 import DeleteBIExportModal from "./DeleteBIExportModal";
 import DeleteClusterTypeModal from "./DeleteClusterTypeModal";
 import DeleteEmployeeModal from "./DeleteEmployeeModal";
+import EditEmployeeRoleModal from "./EditEmployeeRoleModal";
 import DeleteEnvironmentBookingModal from "./DeleteEnvironmentBookingModal";
 import DeleteEnvironmentModal from "./DeleteEnvironmentModal";
 import DeleteEnvironmentPropertyModal from "./DeleteEnvironmentPropertyModal";
@@ -35,6 +36,7 @@ import DeletePoolModal from "./DeletePoolModal";
 import DeletePowerScheduleModal from "./DeletePowerScheduleModal";
 import DeleteSshKeyModal from "./DeleteSshKeyModal";
 import DeleteWebhookModal from "./DeleteWebhookModal";
+import DismissInvitationModal from "./DismissInvitationModal";
 import DisconnectCloudAccountModal from "./DisconnectCloudAccountModal";
 import DisconnectGoogleCalendarModal from "./DisconnectGoogleCalendarModal";
 import EditLeaderboardModal from "./EditLeaderboardModal";
@@ -75,6 +77,7 @@ export {
   DeleteAssignmentRuleModal,
   CreateOrganizationOptionModal,
   DeleteEmployeeModal,
+  EditEmployeeRoleModal,
   DeleteOrganizationModal,
   DeleteOrganizationOptionModal,
   CiCdIntegrationModal,
@@ -140,4 +143,5 @@ export {
   DataSourceBillingReimportModal,
   ShareRunLinkModal,
   AwsAssumedRoleCredentialsModal,
+  DismissInvitationModal,
 };

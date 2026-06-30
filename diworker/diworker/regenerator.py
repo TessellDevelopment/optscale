@@ -1,5 +1,4 @@
 import logging
-from pymongo import MongoClient
 from optscale_client.rest_api_client.client_v2 import Client as RestClient
 from diworker.diworker.importers.factory import get_importer_class
 import clickhouse_connect
@@ -25,8 +24,9 @@ class Regenerator:
     @property
     def mongo_cl(self):
         if self._mongo_cl is None:
+            from optscale_client.mongo_client import get_mongo_client
             mongo_params = self.config_cl.mongo_params()
-            self._mongo_cl = MongoClient(mongo_params[0])
+            self._mongo_cl = get_mongo_client(mongo_params[0])
         return self._mongo_cl
 
     @property

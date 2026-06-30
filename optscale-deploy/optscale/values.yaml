@@ -9,7 +9,7 @@ etcd:
     id:
     repository: *etcd_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: etcd-client
     type: ClusterIP
@@ -19,6 +19,8 @@ etcd:
     peerPort: 2380
   hb_interval: 500 # Adjust if you have slow system
   election_timeout: 5000 # hb_interval x10
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 mariadb:
   name: &mariadb_name mariadb
@@ -27,7 +29,7 @@ mariadb:
     id:
     repository: *mariadb_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   credentials:
     username: root
     password: my-password-01
@@ -36,6 +38,8 @@ mariadb:
     type: ClusterIP
     externalPort: 3306
     internalPort: 3306
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 mongo:
   external: false
@@ -46,7 +50,7 @@ mongo:
     id:
     repository: *mongo_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     host: *mongo_name
     name: *mongo_name
@@ -57,19 +61,25 @@ mongo:
     username: root
     password: SecurePassword-01-02
     key: secureShardingKeyFFFDDa129
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
+  storage_size: 100Gi
 
 rabbitmq:
   name: &rabbit_name rabbitmq
   replicaCount: 1
   mnesiaSize: 10Gi
   memory_limit: 512
-  enableClassicMirroring: false # MUST be false on 4.x
-  enableQuorumDefaults: true # optional: default policy for quorum queues
+  # Consumer timeout - increased from default 3 hours (10800000) to 8 hours (28800000)
+  # to handle long-running import tasks with large CSV files
+  consumer_timeout: 28800000  # 8 hours in milliseconds
+  enableClassicMirroring: false     # MUST be false on 4.x
+  enableQuorumDefaults: true        # optional: default policy for quorum queues
   quorum:
     deliveryLimit: 100
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *rabbit_name
     type: ClusterIP
@@ -81,6 +91,8 @@ rabbitmq:
     username: optscale
     password: secure-password-here
     cookie: dWkhXehOApH1OHshvByfpfTf3Cd8wwkADei7mWd5JF
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 redis:
   name: &redis_name redis
@@ -89,7 +101,7 @@ redis:
     id:
     repository: *redis_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *redis_name
     type: ClusterIP
@@ -103,7 +115,7 @@ rest_api:
     id:
     repository: rest_api
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *rest_api_name
     type: ClusterIP
@@ -117,7 +129,7 @@ auth:
     id:
     repository: *auth_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *auth_name
     type: ClusterIP
@@ -135,7 +147,7 @@ keeper:
     id:
     repository: *keeper_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *keeper_name
     type: ClusterIP
@@ -147,7 +159,7 @@ phpmyadmin:
   replicaCount: 1
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *php_name
     type: NodePort
@@ -180,12 +192,12 @@ herald:
     replicaCount: 1
   engine:
     role: engine
-    replicaCount: 2
+    replicaCount: 1
   image:
     id:
     repository: *herald_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *herald_name
     type: ClusterIP
@@ -202,18 +214,23 @@ elk:
     id:
     repository: *elk_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *elk_name
+    type: ClusterIP  # Use ClusterIP for EKS/cloud deployments, NodePort for bare metal
     elastic_port: &ex_port 9200
     externalPort: *ex_port
     logstash_tcp_port: &logstash_tcp_port 12201
     logstash_udp_port: 12201
+    logstash_tcp_nodeport: 30202  # Only used if type is NodePort
+    logstash_udp_nodeport: 30201  # Only used if type is NodePort
     internal_kibana_port: 80
-    external_kibana_port: 30081
+    external_kibana_port: 30081  # Only used if type is NodePort
   env:
     htpasswd_user: userforelk
     htpasswd_pass: passwordforelk
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 filebeat:
   name: &filebeat filebeat
@@ -221,7 +238,7 @@ filebeat:
     id:
     repository: *filebeat
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *filebeat
     logstash_beats_port: *logstash_tcp_port
@@ -235,7 +252,7 @@ ngui:
     id:
     repository: *ngui_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *ngui_name
     type: ClusterIP
@@ -258,7 +275,7 @@ minio:
   replicaCount: 1
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *minio_name
     type: ClusterIP
@@ -267,15 +284,17 @@ minio:
   credentials:
     access: optscale-minio
     secret: secret_password
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 diworker:
   name: &diworker_name diworker
-  replicaCount: 1
+  replicaCount: 3
   image:
     id:
     repository: *diworker_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 katara_service:
   name: &katara_name katara
@@ -289,7 +308,7 @@ katara_service:
     id:
     repository: katara_service
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *katara_name
     type: ClusterIP
@@ -303,7 +322,7 @@ katara_worker:
     id:
     repository: katara_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 bumischeduler:
   name: &bumi_scheduler_name bumischeduler
@@ -312,7 +331,7 @@ bumischeduler:
     id:
     repository: *bumi_scheduler_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 bumiworker:
   name: &bumi_worker_name bumiworker
@@ -321,7 +340,7 @@ bumiworker:
     id:
     repository: *bumi_worker_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 report_import_scheduler:
   name: report-import-scheduler
@@ -333,11 +352,11 @@ report_import_scheduler:
 
 resource_discovery:
   name: resource-discovery
-  replicaCount: 2 # amount of workers
+  replicaCount: 10 # amount of workers
   image:
     repository: resource_discovery
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
   memory_limit: 1024
@@ -347,7 +366,7 @@ demo_org_cleanup:
   image:
     repository: demo_org_cleanup
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 0 * * *"
   demo_org_lifetime_hrs:
@@ -358,7 +377,7 @@ resource_observer:
   image:
     repository: resource_observer
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -368,7 +387,7 @@ resource_violations:
   image:
     repository: resource_violations
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -378,7 +397,7 @@ calendar_observer:
   image:
     repository: calendar_observer
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 * * * *"
 
@@ -389,12 +408,14 @@ influxdb:
     id:
     repository: *influx_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *influx_name
     type: ClusterIP
     externalPort: &influx_external_port 80
     internalPort: 8086
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 # enable to deploy cleaninfluxdb pod
 deploy_cleaninfluxdb: "true"
@@ -417,7 +438,7 @@ grafana:
     id:
     repository: *grafana_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *grafana_name
     type: NodePort
@@ -429,7 +450,7 @@ grafana:
       id:
       repository: grafana_nginx
       tag: *tag
-      pullPolicy: Never
+      pullPolicy: Always
   env:
     htpasswd_user: userforgrafana
     htpasswd_pass: passwordforgrafana
@@ -440,7 +461,7 @@ insider_scheduler:
   image:
     repository: insider_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 0 * * *"
 
@@ -451,7 +472,7 @@ insider_worker:
     id:
     repository: insider_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 insider_api:
   name: &insider_api_name insider-api
@@ -460,7 +481,7 @@ insider_api:
     id:
     repository: insider_api
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *insider_api_name
     type: ClusterIP
@@ -474,7 +495,7 @@ slacker:
     id:
     repository: *slacker_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *slacker_name
     type: ClusterIP
@@ -492,7 +513,7 @@ error_pages:
     id:
     repository: error_pages
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *error_pages_name
     type: ClusterIP
@@ -510,7 +531,7 @@ clickhouse:
     password: secure-password-1-clk
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *clickhouse_name
     host: *clickhouse_name
@@ -518,6 +539,8 @@ clickhouse:
     httpPort: 8123
     externalPort: 9000
   replicas: 1
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 zohocrm:
   regapp:
@@ -528,7 +551,7 @@ metroculus_scheduler:
   image:
     repository: metroculus_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/30 * * * *"
 
@@ -539,7 +562,7 @@ metroculus_worker:
     id:
     repository: metroculus_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 metroculus_api:
   name: &metroculus_api_name metroculusapi
@@ -548,7 +571,7 @@ metroculus_api:
     id:
     repository: metroculus_api
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *metroculus_api_name
     type: ClusterIP
@@ -562,7 +585,7 @@ webhook_executor:
     id:
     repository: webhook_executor
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 slacker_executor:
   name: slacker-executor
@@ -571,7 +594,7 @@ slacker_executor:
     id:
     repository: slacker_executor
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 herald_executor:
   name: herald-executor
@@ -580,7 +603,7 @@ herald_executor:
     id:
     repository: herald_executor
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 keeper_executor:
   name: keeper-executor
@@ -589,15 +612,15 @@ keeper_executor:
     id:
     repository: keeper_executor
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 booking_observer:
   name: booking-observer
-  replicaCount: 2 # amount of workers
+  replicaCount: 1 # amount of workers
   image:
     repository: booking_observer
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/1 * * * *"
 
@@ -608,7 +631,7 @@ jira_bus:
     id:
     repository: jira_bus
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *jira_bus_name
     type: ClusterIP
@@ -622,7 +645,7 @@ jira_ui:
     id:
     repository: jira_ui
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *jira_ui_name
     type: ClusterIP
@@ -635,7 +658,7 @@ organization_violations:
   image:
     repository: organization_violations
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -645,13 +668,84 @@ cleanmongodb:
     id:
     repository: cleanmongodb
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
-  schedule: "*/3 * * * *"
+  schedule: "0 3 * * 0"  # 3 AM UTC every Sunday
   chunk_size: 500
-  rows_limit: 10000
+  rows_limit: 500000  # weekly run — process up to 500k old docs before compact
   archive_enable:
   file_max_rows: 10000
+  # compact_after_purge: after deleting old raw_expenses, run MongoDB compact
+  # to physically rewrite WiredTiger data files and return PVC space to the OS.
+  # compact briefly blocks reads/writes on the collection — enable only during
+  # a scheduled low-traffic window (the job schedule above controls timing).
+  compact_after_purge: true
+  # Documents deleted per delete+compact cycle.  With rows_limit/cycle_size
+  # cycles per run, space is reclaimed incrementally instead of in one large
+  # compact at the end — so deadline interruptions never leave the collection
+  # bloated.  Smaller = more frequent (shorter) compacts; larger = fewer total
+  # compacts but more peak fragmentation between them.
+  compact_cycle_size: 50000
+  # Delete raw_expenses older than this many days.  6 months = 180 days.
+  # Set to 0 to disable time-based TTL purge entirely.
+  raw_expenses_ttl_days: 180
+  max_runtime_secs: 21600  # 6 hours; job stops cleanly, never aborts mid-batch
+
+# Maintenance window guards the cleanmongodb run from concurrent MongoDB
+# traffic.  When enabled, two CronJobs suspend the report-import-scheduler
+# CronJobs and scale diworker to 0 for the duration of the window, and
+# restore both at the end.  The window is fixed-time, not state-based.
+#
+# Default window (UTC):
+#   02:00  start  — schedulers suspended, diworker scaled to 0
+#   03:00  cleanmongodb starts (existing schedule "0 3 * * 0")
+#   09:00  cleanmongodb deadline reached (max_runtime_secs)
+#   10:00  end    — schedulers unsuspended, diworker restored to replicaCount
+# Pre-buffer (02:00–03:00) gives in-flight pods 1h before deletion starts.
+# Post-buffer (09:00–10:00) absorbs compact overruns.
+#
+# diworker pods scale to 0 abruptly — in-flight imports are killed and
+# their RabbitMQ messages stay unacked, so they are redelivered when
+# pods come back up at 10:00 UTC.  Imports are idempotent (upsert).
+maintenance_window:
+  name: maintenance-window
+  enable: false  # opt-in per environment via user_config.yml
+  start_schedule: "0 2 * * 0"   # Sunday 02:00 UTC
+  end_schedule:   "0 10 * * 0"  # Sunday 10:00 UTC
+  startingDeadlineSeconds: 300
+  image:
+    repository: bitnami/kubectl
+    tag: "1.29"
+    pullPolicy: IfNotPresent
+  # CronJobs to suspend during the window.  Each entry is the metadata.name
+  # of a CronJob in this namespace.  The four report-import-scheduler-*
+  # CronJobs originate via {{ .Values.report_import_schedules }} so they
+  # must be listed explicitly here.
+  suspend_cronjobs:
+    - report-import-scheduler-0
+    - report-import-scheduler-1
+    - report-import-scheduler-6
+    - report-import-scheduler-24
+  # Deployments to scale to 0 at start and restore at end.  Each entry is
+  # name + replicas (the replica count to restore to at maintenance-end).
+  scale_deployments:
+    - name: diworker
+      replicas: 3
+
+aws_billing_reset:
+  name: aws-billing-reset
+  image:
+    id:
+    repository: aws_billing_reset
+    tag: *tag
+    pullPolicy: Always
+  startingDeadlineSeconds: 300
+  # 02:00 UTC on the 10th of every month — after AWS finalises the prior
+  # month's bill (~5th-8th) but before the next diworker import window.
+  schedule: "0 2 10 * *"
+  # How far back to roll last_import_modified_at (days).
+  # 60 days covers EDP true-ups (≤45 d) and marketplace charges (≤45 d).
+  reset_days: 60
 
 trapper_scheduler:
   name: trapper-scheduler
@@ -659,7 +753,7 @@ trapper_scheduler:
   image:
     repository: trapper_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "45 */1 * * *"
 
@@ -670,7 +764,7 @@ trapper_worker:
     id:
     repository: trapper_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 risp_scheduler:
   name: risp-scheduler
@@ -678,7 +772,7 @@ risp_scheduler:
   image:
     repository: risp_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "45 */1 * * *"
 
@@ -689,7 +783,7 @@ risp_worker:
     id:
     repository: risp_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 gemini_scheduler:
   name: gemini-scheduler
@@ -697,7 +791,7 @@ gemini_scheduler:
     id:
     repository: gemini_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -708,7 +802,7 @@ gemini_worker:
     id:
     repository: gemini_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 gemini_data_worker:
   name: gemini-data-worker
@@ -717,7 +811,7 @@ gemini_data_worker:
     id:
     repository: gemini_data_worker
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 bi_scheduler:
   name: bi-scheduler
@@ -725,7 +819,7 @@ bi_scheduler:
     id:
     repository: bi_scheduler
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -736,14 +830,14 @@ bi_exporter:
     id:
     repository: bi_exporter
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
 
 failed_imports_dataset_generator:
   name: failed-imports-dataset-generator
   image:
     repository: failed_imports_dataset_generator
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 0 * * *"
   enable: false
@@ -763,7 +857,7 @@ thanos_receive:
   maxConcurrency: 20
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   remoteWritePath: "api/v1/receive"
   service:
     name: *thanos_receive_name
@@ -771,6 +865,8 @@ thanos_receive:
     httpExternalPort: 10902
     grpcExternalPort: 10901
     remoteWriteExternalPort: 19291
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 thanos_storegateway:
   name: &thanos_storegateway_name thanos-storegateway
@@ -780,19 +876,21 @@ thanos_storegateway:
   ignoreDeletionMarksDelay: "3h"
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *thanos_storegateway_name
     type: ClusterIP
     httpExternalPort: 10902
     grpcExternalPort: 10901
+  # Storage configuration: set to true to use PVC (gp3-expand), false to use node filesystem
+  usePersistentVolume: true
 
 thanos_query:
   name: &thanos_query_name thanos-query
   replicaCount: 1
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *thanos_query_name
     httpType: ClusterIP
@@ -819,7 +917,7 @@ thanos_compactor:
     backoffLimit: 0
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *thanos_compactor_name
     type: ClusterIP
@@ -831,7 +929,7 @@ thanos_web:
   httpPort: &thanos_web_http_port 10902
   image:
     id:
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     name: *thanos_web_name
     type: ClusterIP
@@ -844,7 +942,7 @@ diproxy:
     id:
     repository: *diproxy_name
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *diproxy_name
     type: ClusterIP
@@ -856,7 +954,7 @@ users_dataset_generator:
   image:
     repository: users_dataset_generator
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 0 * * *"
   enable: false
@@ -872,7 +970,7 @@ live_demo_generator:
   image:
     repository: live_demo_generator
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 * * * *"
 
@@ -882,7 +980,7 @@ power_schedule:
   image:
     repository: power_schedule
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "*/5 * * * *"
 
@@ -892,7 +990,7 @@ layout_cleaner:
     id:
     repository: layout_cleaner
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 3 * * *"
 
@@ -903,7 +1001,7 @@ subspector:
     id:
     repository: subspector
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   service:
     name: *subspector_name
     type: ClusterIP
@@ -915,7 +1013,7 @@ subsyncer:
   image:
     repository: subsyncer
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "0 * * * *"
 
@@ -925,7 +1023,7 @@ bailiff:
   image:
     repository: bailiff
     tag: *tag
-    pullPolicy: Never
+    pullPolicy: Always
   startingDeadlineSeconds: 100
   schedule: "30 * * * *"
 
@@ -942,8 +1040,8 @@ databases:
 
 # filled from base overlay
 public_ip:
-company_name: Hystax
-product_name: OptScale
+company_name: Tessell
+product_name: FinOps
 
 # helm release name
 release:
@@ -954,6 +1052,9 @@ public_port: 443
 # only for humans, no robots here
 docker_registry:
 docker_tag:
+
+# Docker Hub credentials (filled from overlay)
+dockerhub_dockercfg:
 
 # filled from base overlay
 optscale_key:
@@ -996,6 +1097,20 @@ ssl:
     issuer_type: issuer
     issuer:
 
+# Tailscale operator configuration
+# Deploys Tailscale operator to enable private network access to your cluster
+# See https://tailscale.com/kb/1236/kubernetes-operator for more details
+tailscale:
+  # OAuth client credentials from Tailscale admin console
+  # Create at: https://login.tailscale.com/admin/settings/oauth
+  oauth:
+    client_id: ""
+    client_secret: ""
+  # Tags assigned to the Tailscale operator
+  defaultTags:
+    - ""
+    - ""
+
 # list of overlays used by runkube to start Optscale (necessary to use proper defaults when adding new keys on update)
 overlay_list: ""
 
@@ -1033,6 +1148,12 @@ optscale_service_emails:
 # Optscale recipient for error emails
 optscale_error_emails:
   recipient:
+  enabled: false
+
+# filled from optscale overlay
+# Optscale recipients automatically CC'd on every outgoing email
+optscale_cc_emails:
+  recipients: []
   enabled: false
 
 # filled from optscale overlay
@@ -1077,7 +1198,7 @@ bumi_scheduler_timeout: 300
 bumi_worker:
   max_retries: 5
   wait_timeout: 7200
-  task_timeout: 3600
+  task_timeout: 7200  # Increased from 3600 (1 hour) to 7200 (2 hours) to handle long-running recommendation tasks
   run_period: 10800
 
 fake_cad_enabled: 0

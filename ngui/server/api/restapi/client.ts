@@ -186,6 +186,14 @@ class RestApiClient extends BaseClient {
     return invitations.invites;
   }
 
+  async getOrganizationInvitations(organizationId: string) {
+    const invitations = await this.get("invites", {
+      params: { organization_id: organizationId },
+    });
+
+    return invitations.invites;
+  }
+
   async updateInvitation(invitationId: string, action: string) {
     const path = `invites/${invitationId}`;
 
@@ -194,6 +202,14 @@ class RestApiClient extends BaseClient {
         action,
       }),
     });
+  }
+
+  async dismissInvitation(invitationId: string) {
+    const path = `invites/${invitationId}`;
+
+    await this.delete(path);
+    // Return success indicator for 204 No Content response
+    return "deleted";
   }
 
   async getOrganizationFeatures(organizationId: QueryOrganizationFeaturesArgs["organizationId"]) {

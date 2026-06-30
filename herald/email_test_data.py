@@ -1,7 +1,7 @@
 EMAIL_TEST_DATA = {
     "alert": {
         "email": ["kowalski@mail.mg"],
-        "subject": "OptScale Pool limit alert",
+        "subject": "FinOps pool limit alert",
         "template_type": "alert",
         "template_params": {
             "texts": {
@@ -19,7 +19,7 @@ EMAIL_TEST_DATA = {
     },
     "employee_greetings": {
         "email": ["andersonmatthew_hwp@hystax.com"],
-        "subject": "Thank you for registering at OptScale. Please proceed with the setup",
+        "subject": "Thank you for registering at FinOps. Please proceed with the setup",
         "template_type": "employee_greetings",
         "template_params": {
             "texts": {
@@ -37,7 +37,7 @@ EMAIL_TEST_DATA = {
     },
     "invite": {
         "email": ["me@1.com"],
-        "subject": "OptScale invitation notification",
+        "subject": "FinOps invitation notification",
         "template_type": "invite",
         "template_params": {
             "texts": {
@@ -136,7 +136,7 @@ EMAIL_TEST_DATA = {
     },
     "pool_exceed_report": {
         "email": ["james31_pza@hystax.com"],
-        "subject": "Action Required: Hystax OptScale Pool Limit Exceed Alert",
+        "subject": "Action Required: Tessell FinOps Pool Limit Exceed Alert",
         "template_type": "pool_exceed_report",
         "template_params": {
             "texts": {
@@ -168,7 +168,7 @@ EMAIL_TEST_DATA = {
     },
     "pool_exceed_resources_report": {
         "email": ["ranxygcrfg@novaemail.com"],
-        "subject": "Action Required: Hystax OptScale Pool Limit Exceed Alert",
+        "subject": "Action Required: Tessell FinOps Pool Limit Exceed Alert",
         "template_type": "pool_exceed_resources_report",
         "template_params": {
             "texts": {
@@ -738,7 +738,7 @@ EMAIL_TEST_DATA = {
     },
     "pool_owner_violation_report": {
         "email": ["lori54_lskqtdln@hystax.com"],
-        "subject": "Action required: Hystax OptScale Resource Constraints Report",
+        "subject": "Action required: Tessell FinOps Resource Constraints Report",
         "template_type": "pool_owner_violation_report",
         "template_params": {
             "texts": {
@@ -793,7 +793,7 @@ EMAIL_TEST_DATA = {
     "resource_owner_violation_alert": {
         "email": ["kepler71@de.io"],
         "template_type": "resource_owner_violation_alert",
-        "subject": "Action required: Hystax OptScale Resource Constraint Violation Alert",
+        "subject": "Action required: Tessell FinOps Resource Constraint Violation Alert",
         "template_params": {
             "texts": {
                 "total_violated": 2,
@@ -833,7 +833,7 @@ EMAIL_TEST_DATA = {
     "resource_owner_violation_report": {
         "email": ["root@hystax.com"],
         "template_type": "resource_owner_violation_report",
-        "subject": "Action required: Hystax OptScale Resource Constraints Report",
+        "subject": "Action required: Tessell FinOps Resource Constraints Report",
         "template_params": {
             "texts": {
                 "total_differ": 1,
@@ -898,7 +898,7 @@ EMAIL_TEST_DATA = {
     "weekly_expense_report": {
         "email": ["root@hystax.com"],
         "template_type": "weekly_expense_report",
-        "subject": "OptScale weekly expense report",
+        "subject": "FinOps weekly expense report",
         "template_params": {
             "texts": {
                 "organization": {
@@ -988,7 +988,7 @@ EMAIL_TEST_DATA = {
     },
     "first_shareable_resources": {
         "email": ["azaza@ma.il"],
-        "subject": "OptScale shared environments notification",
+        "subject": "FinOps shared environments notification",
         "template_type": "first_shareable_resources",
         "template_params": {
             "texts": {"organization": {"id": "5d3d4501-0de8-40dc-a9ed-df2fb1396141", "name": "am2"}},
@@ -1419,7 +1419,7 @@ EMAIL_TEST_DATA = {
     },
     "restore_password": {
         "email": ["serviceuser@hystax.com"],
-        "subject": "OptScale password recovery",
+        "subject": "FinOps password recovery",
         "template_type": "restore_password",
         "template_params": {
             "texts": {"code": 263308},
@@ -1430,7 +1430,7 @@ EMAIL_TEST_DATA = {
     },
     "verify_email": {
         "email": ["serviceuser@hystax.com"],
-        "subject": "OptScale email verification",
+        "subject": "FinOps email verification",
         "template_type": "verify_email",
         "template_params": {
             "texts": {"code": 263308},

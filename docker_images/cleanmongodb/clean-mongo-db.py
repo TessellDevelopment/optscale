@@ -1,10 +1,11 @@
 import json
 import os
+import time
 import etcd
 import logging
 from bson.objectid import ObjectId
 from optscale_client.config_client.client import Client as ConfigClient
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -17,6 +18,21 @@ CHUNK_SIZE = 500
 ROWS_LIMIT = 10000
 DEFAULT_STOP_MAX_ATTEMPT_NUMBER = 5
 DEFAULT_RETRY_ARGS = dict(stop_max_attempt_number=10, wait_fixed=1000)
+RAW_EXPENSES_TTL_DAYS = 180  # 6 months; 0 disables time-based cleanup
+# Maximum wall-clock seconds the entire job is allowed to run.
+# When the deadline is reached, the current batch completes and no new
+# batches are started. Work done so far is committed. The job exits cleanly
+# and resumes from where it left off on the next scheduled run.
+MAX_RUNTIME_SECS = 6 * 3600  # 6 hours
+# Compact rewrites data files and can itself take a long time on large
+# collections. Only attempt it if this many seconds remain on the deadline.
+COMPACT_MIN_SECS_REMAINING = 1800  # 30 minutes
+# Documents deleted per delete+compact cycle when compact_after_purge is on.
+# Smaller values produce more frequent compacts (shorter individual lock
+# windows, lower peak fragmentation) at the cost of more total compact
+# wall-time. The full purge runs up to ROWS_LIMIT // COMPACT_CYCLE_SIZE
+# cycles per job.
+COMPACT_CYCLE_SIZE = 50000
 
 LOG = logging.getLogger(__name__)
 
@@ -35,6 +51,7 @@ class CleanMongoDB(object):
         self._archive_enable = ARCHIVE_ENABLED
         self._file_max_rows = FILE_MAX_ROWS
         self._chunk_size = CHUNK_SIZE
+        self._compact_cycle_size = COMPACT_CYCLE_SIZE
         self._limits = {
             # linked to cloud_account_id
             self.mongo_client.restapi.raw_expenses: ROWS_LIMIT,
@@ -64,7 +81,19 @@ class CleanMongoDB(object):
     def mongo_client(self):
         if not self._mongo_client:
             mongo_params = self.get_mongo_params(self.config_client)
-            self._mongo_client = MongoClient(mongo_params[0])
+            # Configure MongoDB client with explicit timeouts and connection pool settings
+            # to prevent connection refused errors during cleanup operations
+            self._mongo_client = MongoClient(
+                mongo_params[0],
+                serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
+                connectTimeoutMS=20000,          # 20 seconds to establish connection
+                socketTimeoutMS=60000,           # 60 seconds for socket operations
+                maxPoolSize=50,                  # Maximum connections in pool
+                minPoolSize=10,                  # Minimum connections to maintain
+                maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
+                retryWrites=True,                # Automatically retry write operations
+                retryReads=True                  # Automatically retry read operations
+            )
         return self._mongo_client
 
     def get_settings(self):
@@ -101,6 +130,14 @@ class CleanMongoDB(object):
     @chunk_size.setter
     def chunk_size(self, value):
         self._chunk_size = value
+
+    @property
+    def compact_cycle_size(self):
+        return self._compact_cycle_size
+
+    @compact_cycle_size.setter
+    def compact_cycle_size(self, value):
+        self._compact_cycle_size = value
 
     @property
     def archive_enable(self):
@@ -294,11 +331,15 @@ class CleanMongoDB(object):
         ]
         return [self.limits[x] for x in collections]
 
-    def delete_by_organization(self):
+    def delete_by_organization(self, deadline=None):
         info = self.get_deleted_organization_info()
         if not info:
             return
         while info and all(limit > 0 for limit in self.organization_limits()):
+            if deadline is not None and time.monotonic() >= deadline:
+                LOG.warning(
+                    'delete_by_organization: deadline reached, stopping early')
+                break
             self._delete_by_organization(info[0])
             info = self.get_deleted_organization_info()
         LOG.info('Organizations objects processing is completed')
@@ -324,10 +365,14 @@ class CleanMongoDB(object):
                        self.mongo_client.restapi.raw_expenses]
         return [self.limits[x] for x in collections]
 
-    def delete_by_cloud_account(self):
+    def delete_by_cloud_account(self, deadline=None):
         cloud_account_id, is_demo = self.get_deleted_cloud_account()
         while cloud_account_id and all(
                 limit > 0 for limit in self.cloud_account_limits()):
+            if deadline is not None and time.monotonic() >= deadline:
+                LOG.warning(
+                    'delete_by_cloud_account: deadline reached, stopping early')
+                break
             self._delete_by_cloud_account(cloud_account_id, is_demo)
             cleaned_cloud_account_id = cloud_account_id
             cloud_account_id, is_demo = self.get_deleted_cloud_account()
@@ -337,6 +382,160 @@ class CleanMongoDB(object):
                 break
         LOG.info('Cloud accounts processing is completed')
 
+    def _compact_raw_expenses(self):
+        """
+        Run db.compact('raw_expenses') and log size delta.  Returns True on
+        success, False on failure (caller decides whether to keep cycling).
+        Errors are caught — deletions in this cycle stay committed.
+        """
+        try:
+            # MongoDB refuses compact on a replica-set primary without
+            # force:true (single-replica deployments are always primary).
+            # Detect role at runtime so the same code works on both
+            # single-node and multi-node replica sets.
+            is_primary = self.mongo_client.admin.command(
+                'isMaster').get('ismaster', False)
+            compact_cmd = {'compact': 'raw_expenses'}
+            if is_primary:
+                compact_cmd['force'] = True
+
+            stats_before = self.mongo_client.restapi.command(
+                'collStats', 'raw_expenses')
+            size_before_mb = stats_before.get('storageSize', 0) / (1024 * 1024)
+
+            result = self.mongo_client.restapi.command(compact_cmd)
+
+            stats_after = self.mongo_client.restapi.command(
+                'collStats', 'raw_expenses')
+            size_after_mb = stats_after.get('storageSize', 0) / (1024 * 1024)
+
+            LOG.info(
+                'compact complete: storageSize %.1f MB → %.1f MB '
+                '(freed %.1f MB). result: %s',
+                size_before_mb, size_after_mb,
+                size_before_mb - size_after_mb, result)
+            return True
+        except Exception as exc:
+            LOG.warning(
+                'compact failed (non-fatal, deletions were committed): %s',
+                exc)
+            return False
+
+    def purge_old_raw_expenses(self, ttl_days, run_compact=False, deadline=None):
+        """
+        Delete raw_expenses documents whose start_date is older than
+        ttl_days across all cloud accounts.
+
+        Uses the same find-then-delete-by-id pattern as delete_in_chunks to
+        avoid long-running deletes that can cause MongoDB lock contention.
+        The number of documents removed per job run is bounded by the
+        configured rows_limit so the job stays predictably short.
+
+        run_compact: when True, runs db.compact('raw_expenses') on the primary
+        in cycles — every COMPACT_CYCLE_SIZE deletes triggers a compact so
+        space is reclaimed incrementally and a deadline interruption never
+        leaves the collection bloated with already-deleted docs.  WiredTiger
+        marks deleted pages as reusable but does NOT return bytes to the OS
+        until compact rewrites the data files.  compact briefly impacts
+        reads/writes on the collection, so it is off by default; enable via
+        compact_after_purge: true in cleanmongodb config.
+        """
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=ttl_days)
+        collection = self.mongo_client.restapi.raw_expenses
+        rows_limit = self.limits.get(collection, ROWS_LIMIT)
+        cycle_size = self.compact_cycle_size
+
+        delete_filter = {
+            'start_date': {'$exists': True, '$lt': cutoff}
+        }
+
+        # Estimate pending work — counts can be slow on large collections so
+        # fall back gracefully if the count query exceeds its time limit.
+        try:
+            pending = collection.count_documents(
+                delete_filter, maxTimeMS=20000)
+            LOG.info(
+                'purge_old_raw_expenses: ~%d documents older than %d days '
+                '(cutoff %s), will remove up to %d this run, '
+                'cycle=%d (compact=%s)',
+                pending, ttl_days, cutoff.date(), rows_limit,
+                cycle_size, run_compact)
+        except Exception as exc:
+            LOG.warning(
+                'Could not estimate old raw_expenses count: %s', exc)
+            LOG.info(
+                'purge_old_raw_expenses: ~? documents older than %d days '
+                '(cutoff %s), will remove up to %d this run, '
+                'cycle=%d (compact=%s)',
+                ttl_days, cutoff.date(), rows_limit, cycle_size, run_compact)
+
+        total_deleted = 0
+        cycle_num = 0
+        exhausted = False
+        while total_deleted < rows_limit and not exhausted:
+            if deadline is not None and time.monotonic() >= deadline:
+                LOG.warning(
+                    'purge_old_raw_expenses: deadline reached after deleting '
+                    '%d documents in %d cycle(s) — stopping, work is committed',
+                    total_deleted, cycle_num)
+                break
+
+            cycle_num += 1
+            cycle_target = min(cycle_size, rows_limit - total_deleted)
+            cycle_deleted = 0
+            while cycle_deleted < cycle_target:
+                if deadline is not None and time.monotonic() >= deadline:
+                    LOG.warning(
+                        'purge_old_raw_expenses: deadline reached mid-cycle %d '
+                        'after deleting %d documents — stopping',
+                        cycle_num, total_deleted + cycle_deleted)
+                    break
+                batch_size = min(self.chunk_size, cycle_target - cycle_deleted)
+                ids = [
+                    doc['_id']
+                    for doc in collection.find(
+                        delete_filter, {'_id': 1}
+                    ).limit(batch_size)
+                ]
+                if not ids:
+                    exhausted = True
+                    break
+                collection.delete_many({'_id': {'$in': ids}})
+                cycle_deleted += len(ids)
+                if len(ids) < batch_size:
+                    exhausted = True
+                    break
+
+            total_deleted += cycle_deleted
+            LOG.info(
+                'purge_old_raw_expenses: cycle %d deleted %d docs '
+                '(total %d / %d)',
+                cycle_num, cycle_deleted, total_deleted, rows_limit)
+
+            if cycle_deleted == 0:
+                break
+            if not run_compact:
+                continue
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining < COMPACT_MIN_SECS_REMAINING:
+                    LOG.warning(
+                        'compact skipped for cycle %d — only %.0f seconds '
+                        'remain on deadline (need at least %d). '
+                        'Will resume next scheduled job.',
+                        cycle_num, remaining, COMPACT_MIN_SECS_REMAINING)
+                    break
+            LOG.info(
+                'cycle %d: running compact on raw_expenses after deleting '
+                '%d documents this cycle (%d total). Reads/writes briefly '
+                'impacted.', cycle_num, cycle_deleted, total_deleted)
+            self._compact_raw_expenses()
+
+        LOG.info(
+            'purge_old_raw_expenses: finished — deleted %d documents older '
+            'than %d days across %d cycle(s)',
+            total_deleted, ttl_days, cycle_num)
+
     def clean_mongo(self):
         settings = self.get_settings()
         self.archive_enable = bool(
@@ -344,11 +543,28 @@ class CleanMongoDB(object):
         self.file_max_rows = int(settings.get(
             'file_max_rows', 0)) or FILE_MAX_ROWS
         self.chunk_size = int(settings.get('chunk_size') or CHUNK_SIZE)
+        self.compact_cycle_size = int(
+            settings.get('compact_cycle_size') or COMPACT_CYCLE_SIZE)
         rows_limit = int(settings.get('rows_limit') or ROWS_LIMIT)
         for collection in self.limits:
             self.limits[collection] = rows_limit
-        self.delete_by_cloud_account()
-        self.delete_by_organization()
+
+        max_runtime_secs = int(
+            settings.get('max_runtime_secs', MAX_RUNTIME_SECS))
+        deadline = time.monotonic() + max_runtime_secs
+        LOG.info(
+            'clean_mongo: started, deadline in %d seconds (%d hours)',
+            max_runtime_secs, max_runtime_secs // 3600)
+
+        self.delete_by_cloud_account(deadline=deadline)
+        self.delete_by_organization(deadline=deadline)
+        ttl_days = int(
+            settings.get('raw_expenses_ttl_days', RAW_EXPENSES_TTL_DAYS))
+        if ttl_days > 0:
+            compact_after_purge = bool(
+                settings.get('compact_after_purge', False))
+            self.purge_old_raw_expenses(
+                ttl_days, run_compact=compact_after_purge, deadline=deadline)
         LOG.info('Processing completed')
 
 

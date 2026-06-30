@@ -2,6 +2,18 @@
 import os
 import time
 import logging
+import warnings
+
+# botocore 1.34.x calls datetime.datetime.utcnow() which Python 3.12
+# marks as deprecated. The warning is cosmetic noise — botocore's behaviour
+# is correct. Suppress it until we upgrade to boto3>=1.35 where the fix
+# is included (https://github.com/boto/botocore/issues/2982).
+warnings.filterwarnings(
+    'ignore',
+    message=r'datetime\.datetime\.utcnow\(\)',
+    category=DeprecationWarning,
+    module='botocore',
+)
 
 import urllib3
 from concurrent.futures import ThreadPoolExecutor
@@ -91,7 +103,20 @@ class DIWorker(ConsumerMixin):
     @staticmethod
     def get_mongo_cl(config_cl):
         mongo_params = config_cl.mongo_params()
-        return MongoClient(mongo_params[0])
+        # Configure MongoDB client with explicit timeouts and connection pool settings
+        # to handle long-running Azure imports and prevent connection refused errors
+        # Increased timeouts for large dataset aggregations (millions of rows)
+        return MongoClient(
+            mongo_params[0],
+            serverSelectionTimeoutMS=30000,  # 30 seconds to select a server
+            connectTimeoutMS=20000,          # 20 seconds to establish connection
+            socketTimeoutMS=600000,          # 10 minutes for socket operations (increased for large aggregations)
+            maxPoolSize=50,                  # Maximum connections in pool
+            minPoolSize=10,                  # Minimum connections to maintain
+            maxIdleTimeMS=300000,            # 5 minutes before idle connections are closed
+            retryWrites=True,                # Automatically retry write operations
+            retryReads=True                  # Automatically retry read operations
+        )
 
     @staticmethod
     def get_clickhouse_cl(config_cl):

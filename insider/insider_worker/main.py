@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import urllib3
 from etcd import Lock as EtcdLock
-from pymongo import MongoClient
+from optscale_client.mongo_client import get_mongo_client
 from kombu.mixins import ConsumerMixin
 from kombu.log import get_logger
 from kombu import Connection
@@ -33,7 +33,7 @@ class InsiderWorker(ConsumerMixin):
     def mongo_client(self):
         if not self._mongo_client:
             mongo_params = self.config_cl.mongo_params()
-            self._mongo_client = MongoClient(mongo_params[0])
+            self._mongo_client = get_mongo_client(mongo_params[0])
         return self._mongo_client
 
     @property

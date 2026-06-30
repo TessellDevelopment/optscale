@@ -53,7 +53,8 @@ class Configurator(object):
                 config["mongo"]["host"],
                 config["mongo"]["port"],
             )
-        self.mongo_client = MongoClient(mongo_url)
+        from optscale_client.mongo_client import get_mongo_client
+        self.mongo_client = get_mongo_client(mongo_url)
 
         rabbit_config = config["rabbit"]
         credentials = pika.PlainCredentials(
@@ -136,10 +137,20 @@ class Configurator(object):
         logger.info("Writing default etcd keys")
         for key in ETCD_KEYS_TO_DELETE:
             try:
-                logger.debug("Deleting key %s from etc", key)
-                self.etcd_cl.delete(key)
+                logger.debug("Deleting key %s from etcd", key)
+                self.etcd_cl.delete(key, recursive=True)
             except etcd.EtcdKeyNotFound:
-                pass
+                logger.debug("Key %s not found, skipping", key)
+            except etcd.EtcdNotFile:
+                # Key is a directory, delete recursively
+                try:
+                    logger.debug("Key %s is a directory, deleting recursively", key)
+                    self.etcd_cl.delete(key, dir=True, recursive=True)
+                except etcd.EtcdKeyNotFound:
+                    logger.debug("Directory %s not found, skipping", key)
+            except Exception as e:
+                # Fallback: if key doesn't exist or any other error, just log and continue
+                logger.warning("Failed to delete key %s: %s. Continuing...", key, str(e))
         self.etcd_cl.write_branch("/", config, overwrite_lists=True)
         logger.info("Configuring database server")
         self.configure_databases()

@@ -132,7 +132,50 @@ class AssignmentController(BaseController):
         return item, scope_info
 
     def edit(self, item_id, **input_):
-        raise NotImplementedError
+        """
+        Edit an existing assignment to change the role.
+        This allows updating a user's role/permissions for a given scope.
+        """
+        token = input_.pop('token', None)
+        new_role_id = input_.get('role_id')
+
+        if not new_role_id:
+            raise WrongArgumentsException(Err.OA0031, ['role_id'])
+
+        if not isinstance(new_role_id, int):
+            raise WrongArgumentsException(Err.OA0049, ['role_id'])
+
+        # Get the existing assignment
+        item, scope_info = self.get(item_id, **({'token': token} if token else {}))
+
+        # Check if the new role is different from the current role
+        if item.role_id == new_role_id:
+            # No change needed, return existing item
+            return item
+
+        # Check permissions if token is provided
+        if token:
+            user = self.get_user(token)
+            # Check if user has permission to modify assignments
+            self._check_assign_ability(token, user, item)
+
+            # Get assignable roles for the user being assigned
+            assignable_roles, _ = RoleController(self.session, self._config).list(
+                item.user_id, **{'token': token})
+            # Filter assignable roles by assignment level
+            assignable_roles = list(filter(
+                lambda x: item.type_id in list(
+                    map(lambda y: y.id, x.lvl.parent_tree)) + [x.lvl_id],
+                assignable_roles))
+            if new_role_id not in list(map(lambda x: x.id, assignable_roles)):
+                raise ForbiddenException(Err.OA0017, [new_role_id, item.user_id])
+
+        # Update the role
+        item.role_id = new_role_id
+        self.session.add(item)
+        self.session.commit()
+
+        return item
 
     def list(self, **kwargs):
         user_id = kwargs.get('user_id')

@@ -10,14 +10,6 @@ class PoolExceed(Base):
         _, tasks = self.rest_cl.my_tasks_get(
             self.organization_id, user_id=user_id,
             types=exceeded_pools_keys)
-        _, cloud_accs = self.rest_cl.cloud_account_list(self.organization_id,
-                                                        details=True)
-        organization_total_cost = 0
-        organization_forecast = 0
-        for cloud_acc in cloud_accs['cloud_accounts']:
-            details = cloud_acc['details']
-            organization_total_cost += details['cost']
-            organization_forecast += details['forecast']
         exceeded = []
         for exceeded_pools_key in exceeded_pools_keys:
             exceeded_pools = [
@@ -32,7 +24,11 @@ class PoolExceed(Base):
             exceeded.extend(exceeded_pools)
         if not exceeded:
             return
-        return {
+        # Compute totals from the scoped pools visible to this recipient
+        total_cost = round(sum(p['total_expenses'] for p in exceeded), 2)
+        total_forecast = round(sum(p['forecast'] for p in exceeded), 2)
+
+        result = {
             'email': [self.report_data['user_email']],
             'template_type': self.get_template_type(__file__),
             'subject': (
@@ -48,11 +44,12 @@ class PoolExceed(Base):
                             organization['currency'])
                     },
                     'exceeded': exceeded,
-                    'total_cost': round(organization_total_cost, 2),
-                    'total_forecast': round(organization_forecast, 2)
+                    'total_cost': total_cost,
+                    'total_forecast': total_forecast
                 }
             }
         }
+        return result
 
 
 def main(organization_id, report_data, config_client):

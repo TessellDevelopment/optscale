@@ -44,6 +44,9 @@ class BreakdownBaseController(CleanExpenseController):
                 if not key or key in result[entity_name]:
                     continue
                 entity = entities.get(entity_key, {}).get(key)
+                if entity is None:
+                    # Skip if entity not found
+                    continue
                 result[entity_name][key] = {
                     i: entity[i] for i in fields
                 }

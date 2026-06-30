@@ -11,7 +11,6 @@ from alembic import op
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 from optscale_client.config_client.client import Client as EtcdClient
-from pymongo import MongoClient
 from sqlalchemy import Integer, select, String, and_
 
 # revision identifiers, used by Alembic.
@@ -34,10 +33,11 @@ def _get_etcd_config_client():
 
 
 def get_mongo_client():
+    from optscale_client.mongo_client import get_mongo_client as get_configured_client
     config_cl = _get_etcd_config_client()
     mongo_params = config_cl.mongo_params()
     mongo_conn_string = mongo_params[0]
-    return MongoClient(mongo_conn_string)
+    return get_configured_client(mongo_conn_string)
 
 
 def get_cloud_account_ids():

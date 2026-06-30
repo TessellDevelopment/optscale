@@ -228,8 +228,32 @@ query Invitations {
   }
 }
 
+query OrganizationInvitations($organizationId: ID!) {
+  organizationInvitations(organizationId: $organizationId) {
+    id
+    email
+    owner_name
+    owner_email
+    organization
+    organization_id
+    created_at
+    ttl
+    invite_assignments {
+      id
+      scope_id
+      scope_name
+      scope_type
+      purpose
+    }
+  }
+}
+
 mutation UpdateInvitation($invitationId: String!, $action: String!) {
   updateInvitation(invitationId: $invitationId, action: $action)
+}
+
+mutation DismissInvitation($invitationId: String!) {
+  dismissInvitation(invitationId: $invitationId)
 }
 
 query OrganizationFeatures($organizationId: ID!) {

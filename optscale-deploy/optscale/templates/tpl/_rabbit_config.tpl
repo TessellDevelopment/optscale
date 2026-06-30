@@ -15,6 +15,12 @@ load_definitions = /etc/definitions/definitions.json
 ## Memory-based Flow Control threshold
 vm_memory_high_watermark.absolute = {{ .Values.rabbitmq.memory_limit }}MB
 
+## Consumer timeout - time to wait for message acknowledgement
+## Default is 30 minutes (1800000 ms), increased for long-running imports
+{{- if .Values.rabbitmq.consumer_timeout }}
+consumer_timeout = {{ .Values.rabbitmq.consumer_timeout | int }}
+{{- end }}
+
 ## Explicitly deny deprecated features
 deprecated_features.permit.queue_master_locator = false
 ## disabling metrics_collection will break a tab in the UI
